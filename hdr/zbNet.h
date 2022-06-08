@@ -9,6 +9,7 @@
 
 // base header
 #include "km7Net.h"
+#include <sstream>
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // zbNet class
@@ -16,10 +17,10 @@
 //////////////////////////////////////
 // zibsvr file
 
-// zibsvr file type enum class... image, movie, data, folder, crypt
-enum class zbFileType : short { image, movie, data, folder, crypt, dummy };
+// zibsvr file type enum class... image, movie, data, folder, dummy
+enum class zbFileType : short { image, movie, data, folder, dummy };
 
-// zibsvr file state enum class... bkupno, bkup, bkuponly, deleted, bkupban, noaccess, unknown
+// zibsvr file state enum class... bkupno, bkup, bkuponly, deletednc, deleted, bkupban, bkupbannc, none
 //               clt / svr
 //   bkupban   :   o  /  x   : none
 //   bkupno    :   o  /  x   : none
@@ -31,34 +32,48 @@ enum class zbFileType : short { image, movie, data, folder, crypt, dummy };
 //   
 enum class zbFileState : short { bkupno, bkup, bkuponly, deletednc, deleted, bkupban, bkupbannc, none };
 
-// zibsvr file class... type, name, state, date, gps, crypt
+// zibsvr file flag
+class zbFileFlg
+{
+public:
+    uchar thumb   : 1 = 0; // 0: no thumbnail,  1: there is thumbnail 
+    uchar encrypt : 1 = 0; // 0: not encrypted, 1: encrypted
+};
+
+// zibsvr file class... type, state, flg, encrypt, name, date, gps, crypt
 class zbFile
 {
 public:
-    zbFileType  type {};   // image, movie, data, folder
-    zbFileState state{};   // bkupno, bkup, bkuponly, deleted, unknown, bkupban, noaccess
-    int         crypt{};   // encryption state
-    kmStrw      name {};   // relative path from strg.srcpath + name    
-    kmDate      date {};   // time created or written
-    kmGps       gps  {};   // gps info
+    zbFileType  type   {};  // image, movie, data, folder
+    zbFileState state  {};  // bkupno, bkup, bkuponly, deletednc, deleted, bkupban, bkupbannc, none
+    zbFileFlg   flg    {};  // thumb, encrypted    
+    ushort      encrypt{};  // encryption key... reserved
+    kmStrw      name   {};  // relative path from strg.srcpath + name    
+    kmDate      date   {};  // time created or written
+    kmGps       gps    {};  // gps info
 };
 typedef kmMat1<zbFile> zbFiles;
 
 //////////////////////////////////////
 // zibsvr storage 
 
-// zibsvr storage type enum class... imgb (image backup), sync, pssv (passive)
-enum class zbStrgType { imgb, sync, pssv };
+// zibsvr storage type enum class
+//  : imgb (image bkup), sync, pssv (passive)
+//  : imgl (image link for svr), imgs (image shrd for clt)
+enum class zbStrgType { imgb, sync, pssv, imgl, imgs };
 
 // zibsvr storage class
 class zbStrg
 {
 public:
-    zbStrgType type{};    // imgb, sync, pssv
-    kmStrw     name{};    // name only
-    kmStrw     path{};    // full path
-    kmStrw     srcpath{}; // path of source files
-    zbFiles    files{};   // file list
+    zbStrgType type{};     // imgb (bkup), sync, pssv, imgl (link), imgs (shrd)
+    kmStrw     name{};     // name only
+    kmStrw     path{};     // full path
+    kmStrw     srcpath{};  // path of source files
+    zbFiles    files{};    // file list
+    int        chknfid{};  // next fid of checked file only for imgb to make thumb
+    short      lnk_uid{};  // only for imgl
+    short      lnk_sid{};  // only for imgl
 
     // get string for rol
     kmStrw GetTypeStrw()
@@ -68,6 +83,8 @@ public:
         case zbStrgType::imgb : return L"imgb";
         case zbStrgType::sync : return L"sync";
         case zbStrgType::pssv : return L"pssv";
+        case zbStrgType::imgl : return L"imgl";
+        case zbStrgType::imgs : return L"imgs";
         }
         return L"unknown";
     }
@@ -149,7 +166,7 @@ typedef kmMat1<zbUser> zbUsers;
 // zbNet main class
 
 // zibsvr notify enum class
-enum class zbNoti : int { none, sndfile_start, sndfile_end };
+enum class zbNoti : int { none };
 
 // zibsvr mode enum class
 enum class zbMode : int { svr, clt, nks };
@@ -160,7 +177,7 @@ class zbNetInfo
 public:
     kmMacAddr mac{};
     kmStrw    name{};
-    zbMode    mode = zbMode::clt;
+    zbMode    mode{};
     int       user_n{};
     ushort    src_id{};
 };
@@ -182,7 +199,7 @@ public:
     kmStrw      _srcpath{};  // image source path ... client only
     kmStrw      _dwnpath{};  // download path ... client only
     zbNetInfo   _rcvinfo;    // last received info
-    kmNetNks    _nks;        // net key signaling function only for zbMode::nsk
+    kmNetNks    _nks;        // net key signaling function only for zbMode::nks
 
     // init
     void Init(void* parent, kmNetCb netcb, const PathSet& pathSet)
@@ -191,21 +208,22 @@ public:
         kmNet::Init(parent, netcb);
 
         setFilePath(pathSet);
-
+/*
         sockaddr_in saddr;
         saddr.sin_family = AF_INET;
         saddr.sin_port = RTC_PORT;
         saddr.sin_addr.s_addr = 0x3448720A; // 10.114.75.52
         kmAddr4 nks_addr(saddr);
         kmNet::SetNksAddr(nks_addr);
+*/
 
         // load setting... _pkey
-        LoadSetting(); _pkey.Print();
+        //LoadSetting(); _pkey.Print();
         
         // load users and strgs
-        if(_mode == zbMode::svr || _mode == zbMode::clt)
+        //if (_mode == zbMode::svr || _mode == zbMode::clt)
         {
-            LoadUsers();
+            if (LoadUsers() < 1) { sleep(1); return; }
 
             for(int uid = 0; uid < _users.N1(); ++uid)
             {
@@ -234,8 +252,19 @@ public:
     // get functions
     zbUser&    GetUser (int uid)          { return _users(uid); };
     zbStrg&    GetStrg (int uid, int sid) { return _users(uid).strgs(sid); };
-    zbFiles&   GetFiles(int uid, int sid) { return _users(uid).strgs(sid).files; };
     zbNetInfo& GetLastRcvInfo()           { return _rcvinfo; };
+
+    // get files to cope with imgl type
+    zbFiles& GetFiles(int uid, int sid)
+    {
+        zbStrg& strg = _users(uid).strgs(sid);
+
+        if(strg.type == zbStrgType::imgl)
+        {
+            return _users(strg.lnk_uid).strgs(strg.lnk_sid).files;
+        }
+        return strg.files;
+    };
 
     ///////////////////////////////////////////////
     // virtual functions for rcv callback
@@ -273,6 +302,7 @@ public:
         case 4: RcvReqList     (src_id, buf); break;
         case 5: RcvDelFile     (src_id, buf); break;
         case 6: RcvAckDelFile  (src_id, buf); break;
+        case 7: RcvReqThumb    (src_id, buf); break;
         }
     };
 
@@ -289,9 +319,9 @@ public:
             if(uid < 0) ctrl.Reject(); // src_id is not one of registered users
             else
             {
-                zbStrg& strg = _users(uid).strgs(sid);
-
-                ctrl.SetPath(strg.srcpath);
+                //if(sid >= 0) ctrl.SetPath(_users(uid).strgs(sid).srcpath);
+                if(sid >= 0) ctrl.SetPath(_dwnpath);
+                else         ctrl.SetPath(_users(uid).strgs(-sid-1).path + L"/.thumb"); // thumbnail
             }
         }
         else if(cmd_id == 3) // rcv done
@@ -299,18 +329,24 @@ public:
             // get date from the file
             kmFileInfo fileinfo(ctrl.file_path); ctrl.file_name.Printf();
 
-            zbFile file = {zbFileType::image, zbFileState::bkupno, 0, ctrl.file_name, fileinfo.date};
+            zbFile file = {{}, {}, {}, 0, ctrl.file_name, fileinfo.date};
 
-            AddFile(uid, sid, fid, file);
+            if(sid >= 0)
+            {
+                AddFile(uid, sid, fid, file);
 
-            SaveFileList(uid, sid);
+                SaveFileList(uid, sid);
+            }            
+        }
+        else if(cmd_id == 5) // empty queue --> it means that there is no more file to send
+        {
         }
         else if(cmd_id == -1) // snd preblk
         {
         }
         else if(cmd_id == -3) // snd done
         {
-            if(_users(uid).IsSvr())
+            if(_users(uid).IsSvr() && sid >= 0)
             {
                 _users(uid).strgs(sid).files(fid).state = zbFileState::bkup;
                 SaveFileList(uid, sid);
@@ -344,6 +380,7 @@ public:
     void RcvNkeyAddr()
     {
     };
+
 
     /////////////////////////////////////////////////////////////
     // network interface functions
@@ -381,7 +418,7 @@ public:
         ushort sname[ID_NAME] = {0,};
         ushort len = wcslen(_name.P());
         convWC4to2(_name.P(), sname, len);
-        (buf << _mac).PutData(sname, len);
+        (buf << _mac).PutData(sname, MIN(64, _name.N()));
 
         Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
     };
@@ -423,7 +460,7 @@ public:
         ushort name_n;
 
         (buf >> mac).GetData(sname, name_n);
-        buf >> myrole;
+        buf >> myrole >> pkey;
         //buf >> pkey;
 
         wchar wname[ID_NAME] = {0,};
@@ -433,8 +470,18 @@ public:
         // check
         if(FindUser(mac) >= 0) return; // already registered
 
+        // set role
+        zbRole role = zbRole::family;
+
+        switch(myrole)
+        {
+        case zbRole::owner  : role = zbRole::ownsvr; break;
+        case zbRole::member : role = zbRole::svr;    break;
+        case zbRole::family : role = zbRole::family; break;
+        case zbRole::guest  : role = zbRole::guest;  break;
+        }
+
         // add users
-        zbRole role = (myrole == zbRole::owner) ? zbRole::ownsvr : zbRole::svr;
         zbUser user(mac, name, role, _ids(src_id).addr, src_id, pkey);
 
         print("** user was added\n"); user.PrintInfo();
@@ -461,7 +508,7 @@ public:
         switch(noti)
         {
         case zbNoti::none        : print("* receive zbNot::none\n");        break;
-        case zbNoti::sndfile_end : print("* receive zbNot::sndfile_end\n"); break;
+        default: break;
         }
     };
 
@@ -495,7 +542,7 @@ public:
         {
             int uid = FindUser(src_id);
 
-            const int file_n = (int)_users(uid).strgs(sid).files.N1();
+            const int file_n = (int)GetFiles(uid,sid).N1();
 
             if(file_n == 0) return;
 
@@ -573,6 +620,36 @@ public:
         else if(state == zbFileState::bkupbannc) { state = zbFileState::bkupban; SaveFileList(uid, sid); }
     };
 
+    // request thumbnail image... data_id = 7
+    void ReqThumb(int uid, int sid, int fid_s, int fid_e, int w_pix = 0, int h_pix = 0)
+    {
+        uchar data_id = 7; kmNetBuf buf(24);
+
+        buf << sid << fid_s << fid_e << w_pix << h_pix;
+
+        const ushort src_id = _users(uid).src_id;
+
+        Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 1200.f);
+    };
+    void RcvReqThumb(ushort src_id, kmNetBuf& buf)
+    {
+/* for server
+        int uid = FindUser(src_id), sid, fid_s, fid_e, w_pix, h_pix;
+
+        buf >> sid >> fid_s >> fid_e >> w_pix >> h_pix;
+
+        // send files
+        zbFiles& files = GetFiles(uid, sid);
+
+        fid_e = MIN(fid_e, (int)files.N1());
+
+        for(int fid = fid_s; fid <= fid_e; ++fid)
+        {
+            SendThumb(uid, sid, fid, w_pix, h_pix);
+        }
+*/
+    };
+
     /////////////////////////////////////////////////////////////
     // setting functions
 
@@ -585,7 +662,7 @@ public:
     };
 
     // load setting
-    int LoadSetting()  try
+    int LoadSetting() try
     {
         kmFile file(kmStrw(L"%S/.zbnetsetting", _path.P()).P());
 
@@ -616,6 +693,15 @@ public:
         return -1;
     };
 
+    // find with user's role
+    //   return   <  0 : there is no owner
+    //            >= 0 : uid
+    int FindUser(zbRole role)
+    {
+        for(int i = (int)_users.N1(); i--; ) if(_users(i).role == role) return i;
+        return -1;
+    };
+
     // add user
     void AddUser(zbUser& user)
     {
@@ -631,7 +717,19 @@ public:
         kmFile::MakeDir(user.path.P());
 
         // add storage
-        AddStrg(uid, zbStrgType::imgb, _srcpath);
+        AddStrg(uid, zbStrgType::imgb, user.IsSvr() ? _srcpath : kmStrw());
+
+        // add link storage ... only for test
+        if(user.role == zbRole::member) // svr
+        {
+            AddStrgLnk(uid, 0, 0);
+        }
+        else if(user.role == zbRole::svr) // clt
+        {
+            AddStrg(uid, zbStrgType::imgs, _dwnpath);
+        }
+
+        // save strg.list
         SaveStrgs(uid);
     };
 
@@ -670,13 +768,13 @@ public:
         }
         return (int)_users.N1();
     }
-    catch(kmException e) { kmPrintException(e); return 0; };
+    catch(kmException) { return 0; };
 
     /////////////////////////////////////////////////////////////
     // storage control functions
 
     // add storage
-    void AddStrg(int uid, zbStrgType type, const kmStrw& srcpath)
+    int AddStrg(int uid, zbStrgType type, const kmStrw& srcpath)
     {
         // init variables
         zbStrgs&  strgs  = _users(uid).strgs;
@@ -692,12 +790,38 @@ public:
         if(srcpath.N1() > 1) strg.srcpath = srcpath;
         else                 strg.srcpath = strg.path;
 
-        // add strg
-        strgs.PushBack(strg);
-
-        // make srtg folder
+        // make strg folder
         kmFile::MakeDir(strg.path.P());
+
+        // make thumbnail folder
+        kmStrw thumbnail_path(L"%S/.thumb",strg.path.P());
+        kmFile::MakeDir(thumbnail_path.P());
+
+        // add strg
+        return (int)strgs.PushBack(strg);
     };
+
+    // add link storage
+    int AddStrgLnk(int uid, int lnk_uid, int lnk_sid)
+    {
+        // init variables
+        zbStrgs&  strgs  = _users(uid).strgs;
+        const int strg_n = (int)strgs.N1();
+
+        if(strg_n == 0) strgs.Recreate(0,4);
+
+        // set strg
+        zbStrg strg = {zbStrgType::imgl, kmStrw(L"strg%d",strg_n)};
+
+        strg.path    = _users(lnk_uid).strgs(lnk_sid).path;
+        strg.srcpath = _users(lnk_uid).strgs(lnk_sid).srcpath;        
+
+        strg.lnk_uid = lnk_uid;
+        strg.lnk_sid = lnk_sid;
+
+        // add strg
+        return (int)strgs.PushBack(strg);
+    }
 
     // save strgs list
     void SaveStrgs(int uid)
@@ -764,6 +888,32 @@ public:
     /////////////////////////////////////////////////////////////
     // file list control functions
 
+    int UpdateFileOfList(int uid, int sid)
+    {
+        zbFiles& files = _users(uid).strgs(sid).files;
+        if (files.N1() < 1) return 0;
+
+        for(int i = 0; i < files.N1(); ++i)
+        {
+            if (files(i).state != zbFileState::bkupno) continue;
+
+            SendFile(uid,sid,i);
+        }
+
+        return 1;
+    }
+
+    int checkStateOfLastFile(int uid, int sid)
+    {
+        zbFiles& files = _users(uid).strgs(sid).files;
+
+        if (files.N1() < 1) return 0;
+
+        while (files(files.N1()-1).state != zbFileState::bkup) {sleep(1);}
+
+        return 1;
+    }
+
     // update files of every user's every storage
     void UpdateFile(bool fileSendFlag = true)
     {
@@ -773,6 +923,8 @@ public:
 
         for(int uid = 0; uid < usr_n; ++uid)
         {
+            if(!_users(uid).IsSvr()) continue;
+
             const int stg_n = (int)_users(uid).strgs.N1();
 
             for(int sid = 0; sid < stg_n; ++sid)
@@ -785,9 +937,16 @@ public:
             }
         }
     };
+
+    // update file
+    // * Notet that subpath is for recursive function. 
+    // * subpath must be an empty string allocated with sufficient size
     int UpdateFile(int uid, int sid, kmStrw& subpath, bool fileSendFlag)
     {
-        // files
+        // check if user is svr
+        if(!_users(uid).IsSvr()) return 0;
+
+        // get files        
         zbStrg&  strg  = _users(uid).strgs(sid);
         zbFiles& files = strg.files;
 
@@ -832,7 +991,9 @@ public:
                     int fid = AddFile(uid, sid, file);
 
                     // send file to svr
-                    if (fileSendFlag) SendFile(uid,sid,fid); ++add_n;
+                    if (fileSendFlag) SendFile(uid,sid,fid);
+
+                    ++add_n;
                 }
                 subpath.Cutback(flsti.name.GetLen()-1);
             }
@@ -879,7 +1040,6 @@ public:
     //  return : fid
     int AddFile(int uid, int sid, zbFile& file)
     {
-        wcout<<L"** add file ("<<uid<<L","<<sid<<L") : ";
         char cname[100] = {0,};
         wcstombs(cname, file.name.P(), wcslen(file.name.P())*2);
 
@@ -898,6 +1058,8 @@ public:
 
             if(mdf._date != kmDate()) file.date = mdf._date;
             if(mdf._gps  != kmGps())  file.gps  = mdf._gps;
+
+            if(mdf._type == kmMdfType::unknown) file.type = zbFileType::data;
         }
         return (int)files.PushBack(file);
     };
@@ -911,7 +1073,6 @@ public:
 
         if(fid < file_n) // old one
         {
-            wcout<<L"** add file ("<<uid<<L","<<sid<<L","<<fid<<L") : ";
             char cname[100] = {0,};
             wcstombs(cname, file.name.P(), wcslen(file.name.P())*2);
             if(files(fid).state == zbFileState::bkuponly) // downloaded from svr
@@ -939,7 +1100,7 @@ public:
         {
             for(;file_n < fid; ++file_n)
             {
-                zbFile dummy = {zbFileType::dummy, zbFileState::none, 0, L"---"};
+                zbFile dummy = {zbFileType::dummy, zbFileState::none, {}, 0, L"---"};
                 AddFile(uid, sid, dummy);
             }
             AddFile(uid, sid, file);
@@ -1032,7 +1193,7 @@ public:
         // init variables
         ushort  src_id = _users(uid).src_id;
         zbStrg& strg   = _users(uid).strgs(sid);
-        zbFile& file   = strg.files(fid);
+        zbFile& file   = GetFiles(uid,sid)(fid);
 
         // enqueue the file to send
         kmNet::EnqueueSndFile(src_id, strg.srcpath, file.name, sid, fid);
@@ -1072,7 +1233,7 @@ public:
     int LoadFileList(int uid, int sid) try
     {
         // init variables
-        zbStrg&  strg  = _users(uid).strgs(sid);
+        zbStrg&  strg  = _users(uid).strgs(sid); if(strg.type == zbStrgType::imgl) return 0;
         zbFiles& files = strg.files;
         kmStrw   path(L"%S/.file.list", strg.path.P());
 
@@ -1145,6 +1306,14 @@ public:
             wcstombs(cname, file.name.P(), wcslen(file.name.P())*2);
             cout<<cname<<"  ";
 
+            switch(file.type)
+            {
+            case zbFileType::data   : wcout<<L" [data]   "; break;
+            case zbFileType::dummy  : wcout<<L" [dummy]  "; break;
+            case zbFileType::image  : wcout<<L" [image]  "; break;
+            case zbFileType::movie  : wcout<<L" [movie]  "; break;
+            case zbFileType::folder : wcout<<L" [folder] "; break;
+            }
             switch(file.state)
             {
             case zbFileState::bkupno   : wcout<<L"[bkupno]"<<endl;   break;
@@ -1160,6 +1329,50 @@ public:
         cout<<endl;
     };
 
+    // print file list
+    string PrintFileListTest(int uid, int sid)
+    {
+        stringstream oss;
+        zbFiles& files = _users(uid).strgs(sid).files;
+
+        oss<<"\n* file list : uid "<<uid<<", sid "<<sid<<", num "<<files.N1()<<"\n\n";
+
+        for(int i = 0; i < files.N1(); ++i)
+        {
+            zbFile& file = files(i);
+
+            oss<<"["<<i<<"] "<<file.date.GetStrPt().P()<<"  ";
+            char cgps[200] = {0,};
+            wcstombs(cgps, file.gps.GetStrw().P(), wcslen(file.gps.GetStrw().P())*2);
+            oss<<cgps<<"  ";
+            char cname[200] = {0,};
+            wcstombs(cname, file.name, wcslen(file.name)*2);
+            oss<<cname<<"  ";
+
+            switch(file.type)
+            {
+            case zbFileType::data   : oss<<" [data]   "; break;
+            case zbFileType::dummy  : oss<<" [dummy]  "; break;
+            case zbFileType::image  : oss<<" [image]  "; break;
+            case zbFileType::movie  : oss<<" [movie]  "; break;
+            case zbFileType::folder : oss<<" [folder] "; break;
+            }
+            switch(file.state)
+            {
+            case zbFileState::bkupno   : oss<<"[bkupno]\n";   break;
+            case zbFileState::bkup     : oss<<"[bkup]\n";     break;
+            case zbFileState::bkuponly : oss<<"[bkuponly]\n"; break;
+            case zbFileState::deletednc: oss<<"[deletednc]\n";break;
+            case zbFileState::deleted  : oss<<"[deleted]\n";  break;
+            case zbFileState::none     : oss<<"[none]\n";     break;
+            case zbFileState::bkupbannc: oss<<"[bkupbannc]\n";break;
+            case zbFileState::bkupban  : oss<<"[bkupban]\n";  break;
+            }
+        }
+        oss<<"\n";
+        return oss.str();
+    };
+
     void convWC4to2(wchar* wc, ushort* c, const ushort& n) { for (ushort i = 0; i < n; ++i) { c[i] = (ushort)wc[i]; } };
     void convWC2to4(ushort* c, wchar* wc, const ushort& n) { for (ushort i = 0; i < n; ++i) { wc[i] = (wchar)c[i]; } };
     void setFilePath(const PathSet& pathSet)
@@ -1167,14 +1380,29 @@ public:
         wchar temp[256] = {0,};
         mbstowcs(temp, pathSet.path.c_str(), pathSet.path.length()*2);
         _path.SetStr(temp);
+        kmStrw path(L"%S",temp);
+        kmFile::MakeDir(path.P());
 
         mbstowcs(temp, pathSet.srcpath.c_str(), pathSet.srcpath.length()*2);
         _srcpath.SetStr(temp);
 
         mbstowcs(temp, pathSet.dlpath.c_str(), pathSet.dlpath.length()*2);
         _dwnpath.SetStr(temp);
+        kmStrw dwpath(L"%S",temp);
+        kmFile::MakeDir(dwpath.P());
     };
 
+    // check id
+    bool CheckId(int uid, int sid, int fid)
+    {
+        if(uid < 0 || uid >= _users.N1()            ||
+           sid < 0 || sid >= _users(uid).strgs.N1() ||
+           fid < 0 || fid >= GetFiles(uid, sid).N1())
+        {
+            print("* [CheckId](uid %d, sid %d, fid %d)\n", uid, sid, fid); return false;
+        }
+        return true;
+    };
 
     /////////////////////////////////////////////////////////////
     // nsk functions

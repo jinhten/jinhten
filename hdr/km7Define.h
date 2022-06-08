@@ -571,7 +571,7 @@ inline void kmPrintException(kmException e)
     case KE_CANNOT_FIND       : PRINTFA("KE_CANNOT_FIND");       break;
     case KE_THREAD_FAILED     : PRINTFA("KE_THREAD_FAILED");     break;
 
-    case KE_CUFFT_ERROR          : PRINTFA("KE_CUFFT_ERROR");       break;
+    case KE_CUFFT_ERROR       : PRINTFA("KE_CUFFT_ERROR");       break;
     case KE_CUDA_ERROR        : PRINTFA("KE_CUDA_ERROR");        break;
     case KE_NVML_ERROR        : PRINTFA("KE_NVML_ERROR");        break;
     case KE_HEADER_ERROR      : PRINTFA("KE_HEADER_ERROR");      break;

@@ -1,6 +1,8 @@
 ﻿// include zbNet header
 #include "zbNet.h"
 #include <vector>
+#include <limits>
+#include <stdio.h>
 
 //////////////////////////////////////////////////////////////////
 // window class 
@@ -11,9 +13,9 @@ public:
 
     struct FileInfos
     {
-        int type = 0;
-        int state = 0;
-        int date = 0;
+        long long date = 0;
+        short type = 0;
+        short state = 0;
         int dummy = 0;
         string name = "";
     };
@@ -52,7 +54,7 @@ public:
 */
     int checkConnect()
     {
-        if (_net.GetIds().N() > 0) return 1;
+        if (_net._users.N1() > 0) return 1;
         return 0;
     }
 
@@ -117,6 +119,21 @@ public:
 
             while (i < j)
             {
+                while (files(v[i]).date.GetInt() > files(v[pivot]).date.GetInt())
+                {
+                    i++;
+                }
+                while (files(v[j]).date.GetInt() <= files(v[pivot]).date.GetInt() && j > first)
+                {
+                    j--;
+                }
+                if (i < j)
+                {
+                    temp = v[i];
+                    v[i] = v[j];
+                    v[j] = temp;
+                }
+/*
                 while (files(v[i]).date.GetInt() <= files(v[pivot]).date.GetInt() && i < last)
                 {
                     i++;
@@ -131,6 +148,7 @@ public:
                     v[i] = v[j];
                     v[j] = temp;
                 }
+*/
             }
 
             temp = v[pivot];
@@ -149,14 +167,20 @@ public:
 */
     vector<int> getTotalFileListDateSorted()
     {
-        zbFiles& files = _net._users(0).strgs(0).files;
         vector<int> v;
+        if (_net.GetIds().N() <= 0) return v;
+
+        zbFiles& files = _net._users(0).strgs(0).files;
+        if (files.N1() < 1) return v;
+
         for (int i = 0; i < files.N1(); ++i)
         {
-            v.push_back(i);
+            if (files(i).state > zbFileState::bkupno && files(i).state < zbFileState::deleted)
+                v.push_back(i);
         }
 
-        quickSort(0, files.N1()-1, files, v);
+        if (v.size() > 0) quickSort(0, v.size()-1, files, v);
+
         return v;
     }
 
@@ -171,19 +195,20 @@ public:
 */
     int getFileInfo(int fid, FileInfos& infos)
     {
-        FileInfos ret;
+        if (_net.GetIds().N() <= 0) return 0;
+
         zbFiles& files = _net._users(0).strgs(0).files;
         if (fid >= files.N1()) return 0;
 
         zbFile& file = files(fid);
 
-        ret.type = (int)file.type;
-        ret.state = (int)file.state;
-        ret.date = file.date.GetInt();
+        infos.type = (int)file.type;
+        infos.state = (int)file.state;
+        infos.date = file.date.GetInt();
 
         char name[200] = {0,};
         wcstombs(name, file.name.P(), wcslen(file.name.P()));
-        ret.name.assign(name);
+        infos.name.assign(name);
 
         return 1;
     }
@@ -196,7 +221,17 @@ public:
 
 @return 
 */
-    int requestFile(int fid, string path) {return 1;} // TODO
+    int requestFile(int fid_s, int fid_e)
+    {   
+        if (_net.GetIds().N() <= 0) return 0;
+        
+        zbFiles& files = _net._users(0).strgs(0).files;
+        if (fid_s < 0 || fid_s > fid_e) return 0;
+        if (fid_e >= files.N1()) return 0;
+        
+        _net.ReqFile(0, 0, fid_s, fid_e);
+        return 1;
+    }   
 
 /**
 @brief   file ID 를 입력받아 서버에  thumbnail Media 를 요청하여  응답 파일을 지정된 path 에 저장
@@ -206,7 +241,18 @@ public:
 
 @return  
 */
-    int requestThumbnail(int fid, string path) { return 1;} // TODO
+    int requestThumbnail(int fid_s, int fid_e)
+    {
+        if (_net.GetIds().N() <= 0) return 0;
+
+        zbFiles& files = _net._users(0).strgs(0).files;
+        if (fid_s < 0 || fid_s > fid_e) return 0;
+        if (fid_e >= files.N1()) return 0;
+
+        _net.ReqThumb(0, 0, fid_s, fid_e);
+
+        return 1;
+    }
 
 /**
 @brief   갤러리에 새로 추가된 파일이나 삭제된 파일을 검사하여  파일목록을 업데이트
@@ -227,8 +273,22 @@ public:
 */
     int backUpAll()
     {
-        _net.UpdateFile(); // default true
+        _net.UpdateFileOfList(0, 0); // default true
         return 1;
+    }
+
+/**
+@brief   backUp이 모두 완료되었는지 확인.
+         file list는 이미 update 되었기 때문에 file list의 가장 마지막 fid의 state가 back인지 확인
+
+@return  1 : 마지막 fid의 state가 bkup
+         0 : 마지막 fid의 state가 bkupno
+*/
+    int checkBackUpComplete()
+    {
+        if (_net.GetIds().N() <= 0) return 0;
+
+        return _net.checkStateOfLastFile(0, 0);
     }
 
 /**
@@ -285,6 +345,19 @@ public:
     int deleteBothFile(int fid)
     {
         _net.DeleteFileBoth(0, 0, fid);
+        return 1;
+    }
+
+/**
+@brief  APP Action에 의해서 file의 state가 변경된 경우, file list에 저장
+
+@param
+
+@return 
+*/
+    int saveFileList()
+    {
+        _net.SaveFileList(0, 0);
         return 1;
     }
 
@@ -462,25 +535,35 @@ protected:
 /////////////////////////////////////////////////////////////////
 void mainConvWC4to2(wchar* wc, ushort* c, const ushort& n) { for (ushort i = 0; i < n; ++i) { c[i] = (ushort)wc[i]; } };
 
-/*
+int prot_id = 2;
 void zibCli(zibLinux* linuxNet)
 {
     sleep(2);
     while (1)
     {
-        int prot_id = 0;
         cout<<" =========================="<<endl;
         cout<<"Data(2), File(4) : ";
+
+        cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
         cin>>prot_id;
-        if (prot_id == 2)
-            cout<<"Send Data"<<endl;
-        else if (prot_id == 4)
-            cout<<"Send File"<<endl;
-        cin.clear();
-        cin.ignore(INT_MAX, '\n');
+        cout<<"Data(2), File(4) : ";
+        cout<<prot_id<<endl;
+
+        if (cin.fail())
+        {
+            cout << "ERROR -- You did not enter an integer"<<endl;
+
+            // get rid of failure state
+            cin.clear(); 
+
+            // From Eric's answer (thanks Eric)
+            // discard 'bad' character(s) 
+            cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        }
+
+        sleep(5);
     }
 }
-*/
 
 /////////////////////////////////////////////////////////////////
 // entry
@@ -498,17 +581,30 @@ int main() try
     // for debug
     //std::thread cli(zibCli, &linuxNet);
 
+    sleep(5);
+
+    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    linuxNet.updateFileList();
+    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    linuxNet.backUpAll();
+    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    //linuxNet.deleteDeviceFile(0);
+    //linuxNet.deleteServerFile(1);
+    sleep(10);
+    linuxNet.updateFileList();
+    linuxNet.backUpAll();
+    for (auto v : linuxNet.getTotalFileListDateSorted())
+        cout<<v<<" ";
+    cout<<endl;
     sleep(1);
+    cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
 
-    //linuxNet.uploadFile(0);
-    //cout<<linuxNet.checkConnect()<<endl;
-    //linuxNet.updateFileList();
-    //linuxNet.backUpAll();
-    //linuxNet.deleteBothFile(1);
-    //linuxNet.deleteServerFile(5);
-    linuxNet.allowFileBackUp(5);
+    //linuxNet.requestThumbnail(0, 0);
 
-    while (1) { sleep(100); }
+    int a = 99;
+    while (1) {
+        sleep(2);
+    }
 
     return 0;
 }

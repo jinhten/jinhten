@@ -53,7 +53,7 @@
 
 //#define DEFAULT_PORT 60215
 #define DEFAULT_PORT 60165
-#define RTC_PORT 9090
+#define RTC_PORT 60165
 
 #define INVALID_SOCKET -1
 
@@ -74,7 +74,7 @@ inline uchar  ntoh(uchar  a) { return        a ; };
 inline wchar  ntoh(wchar  a) { return ntohs (a); };
 inline ushort ntoh(ushort a) { return ntohs (a); };
 inline uint   ntoh(uint   a) { return ntohl (a); };
-inline uint64 ntoh(uint64 a) { return (((int64)ntohl(a)) << 32) + ntohl(a >> 32); };
+inline uint64 ntoh(uint64 a) { return (((uint64)ntohl(a)) << 32) + ntohl(a >> 32); };
 
 inline char   ntoh(char   a) { return        a ; };
 inline short  ntoh(short  a) { return ntohs (a); };
@@ -218,31 +218,31 @@ public:
         int sck = 0;
         char ip[INET6_ADDRSTRLEN] = {0,};
         struct sockaddr_in *addr;
-        
+
         /* Get a socket handle. */
         sck = socket(PF_INET, SOCK_DGRAM, 0);
         if(sck < 0)
-        {   
+        {
             perror("socket");
             return false;
         }
-        
+
         /* Query available interfaces. */
         ifc.ifc_len = sizeof(buf);
         ifc.ifc_buf = buf;
         if(ioctl(sck, SIOCGIFCONF, &ifc) < 0)
-        {   
+        {
             perror("ioctl(SIOCGIFCONF)");
             return false;
         }
-        
+
         /* Iterate through the list of interfaces. */
         ifr = ifc.ifc_req;
         addr = (struct sockaddr_in*)&(ifr[1].ifr_addr);
-        
+
         /* Get the IP address*/
         if(ioctl(sck, SIOCGIFADDR, &ifr[1]) < 0)
-        {   
+        {
             perror("ioctl(OSIOCGIFADDR)");
         }
 
@@ -257,7 +257,7 @@ public:
             perror("ioctl(SIOCGIFHWADDR)");
             return false;
         }
-        
+
         // display result
         //macAddr.Set((uchar*)ifr[1].ifr_hwaddr.sa_data);
         char mac[6] = {1,1, (char)((addr->sin_addr.s_addr>>24)&0xFF)
@@ -272,6 +272,38 @@ public:
         close(sck);
         return true;
     };
+
+/* TODO
+    // get own local ip address
+    static kmAddr4 GetLocalAddr(int idx = 0, ushort port = 0, int display_on = 0)
+    {
+        // get addr table
+        MIB_IPADDRTABLE tbl[16]; ulong size = sizeof(tbl);
+        
+        if(GetIpAddrTable(tbl, &size, 0) != 0) return 0;
+
+        // get address
+        const int n = tbl->dwNumEntries;
+
+        if(display_on > 0)
+        {
+            PRINTFA("* GetLocalAddr()\n");
+            for(int i = 0; i < n; ++i)
+            {
+                PRINTFA("  [%d] ip :%s\n", i, kmAddr4(tbl->table[i].dwAddr).GetIpStr().P());
+            }
+        }
+        return (idx >= n)? 0 : kmAddr4(tbl->table[idx].dwAddr, port);
+    };
+
+    // get udp broadcasting address
+    static kmAddr4 GetBrdcAddr(ushort port = 0)
+    {
+        kmAddr4 addr = kmSock::GetLocalAddr(0, port); addr.c[3] = 255;
+
+        return addr;
+    };
+*/
 
     // get WSA error
     static kmStra GetErrStr(int err_code = 0)
@@ -450,7 +482,7 @@ public:
         return ::sendto(_sck, data.P(), (int)data.N1()*sizeof(T), 0, (sockaddr*)&saddr, sizeof(saddr));
     }
 
-    // send to (for udp broadcast)
+    // send to (for udp broadcast) using global broadcast address (255.255.255.255)
     template<typename T> int SendtoBroadcast(const kmMat1<T>& data, ushort port = DEFAULT_PORT)
     {
         sockaddr_in saddr;
@@ -460,6 +492,19 @@ public:
 
         return ::sendto(_sck, data.P(), (int)data.N1()*sizeof(T), 0, (sockaddr*)&saddr, sizeof(saddr));
     };
+
+/*
+    // send to (for udp broadcast) using local broadcast address (ex. 10.114.75.255)
+    template<typename T> int SendtoBroadcastLocal(const kmMat1<T>& data, ushort port = DEFAULT_PORT)
+    {
+        kmAddr4      addr = kmSock::GetBrdcAddr(DEFAULT_PORT);
+        sockaddr_in saddr = addr.GetSckAddr();
+
+        print("* broadcasting to %s\n", addr.GetStr().P());
+
+        return ::sendto(_sck, data.P(), (int)data.N1()*sizeof(T), 0, (sockaddr*)&saddr, sizeof(saddr));
+    };
+*/
 
     // shutdown
     //   [ how ] SD_RECEIVE (0) : shutdown receive operations
@@ -481,6 +526,7 @@ public:
     {
         if(_state == 0) return 0;
 
+        //const int ret = ::closesocket(_sck); Init();
         const int ret = ::close(_sck); Init();
 
         if(ret != 0) PRINTFA("** [close] error occurs : %s\n", GetErrStr().P());
@@ -801,10 +847,9 @@ public:
     inline void On()  { _timer.Start(); };
     inline void Off() { _timer.Stop (); };
 
-    inline bool IsOut()
-    {
-        return _timer.IsStarted() && (_timer.sec() > _tout_sec); 
-    };
+    inline bool IsOut() { return _timer.IsStarted() && (_timer.sec() > _tout_sec); };
+    inline bool IsOff() { return _timer.IsNotStarted(); };
+    inline bool IsOn () { return _timer.IsStarted(); };
 };
 
 // kmNetBase class for protocol
@@ -833,7 +878,11 @@ public:
     };
     int SendtoBroadcast()
     {
-        _sck.SetSckOptBroadcast(1); const int ret = _sck.SendtoBroadcast(_snd_buf);
+        _sck.SetSckOptBroadcast(1);
+        
+        const int ret = _sck.SendtoBroadcast(_snd_buf);
+        //const int ret = _sck.SendtoBroadcastLocal(_snd_buf);
+
         _sck.SetSckOptBroadcast(0);
         UnlockSnd();  return ret; //////////////////////////////// unlock    
     }
@@ -856,6 +905,8 @@ public:
     inline void SetTom(float tout_sec) { _tom.Set(tout_sec); };
     inline void SetTomOn ()            { _tom.On (); };
     inline void SetTomOff()            { _tom.Off(); };
+    inline bool IsTomOn ()             { return _tom.IsOn (); };
+    inline bool IsTomOff()             { return _tom.IsOff(); };
     inline bool IsTomOut()             { return _tom.IsOut(); };
 };
 
@@ -1392,7 +1443,7 @@ public:
 
         ushort cname[64] = {0,};
         convWC4to2(name.P(), cname, name.N());
-        (*_net << hd << _net->_mac).PutData(cname, (ushort)MIN(64,name.N()*2));
+        (*_net << hd << _net->_mac).PutData(cname, (ushort)MIN(64,name.N()));
 
         // send snd_buf
         _net->Sendto(addr);
@@ -2002,10 +2053,11 @@ public:
     {
         switch(cmd_id)
         {
-        case 1: RcvPreBlk(addr); break;
-        case 2: RcvPreAck(addr); break;
-        case 3: RcvBlk   (addr); break;
-        case 4: RcvAck   (addr); break;
+        case 1: RcvPreBlk  (addr); break;
+        case 2: RcvPreAck  (addr); break;
+        case 3: RcvBlk     (addr); break;
+        case 4: RcvAck     (addr); break;
+        case 5: RcvEmptyQue(addr); break;
         }
     };
 
@@ -2209,7 +2261,7 @@ public:
         ushort cFile[200] = {0,};
         ushort len = wcslen(file_str.P());
         convWC4to2(file_str.P(), cFile, len);
-        (*_net << hd << blk_n << blk_byte << byte << prm0 << prm1).PutData(cFile, len+1);
+        (*_net << hd << blk_n << blk_byte << byte << prm0 << prm1).PutData(cFile, file_str.N());
 
         // send buffer
         _net->Sendto(addr);
@@ -2259,7 +2311,7 @@ public:
             _rcv_state = 0; return;
         }
 
-        // check if file_path is availables        
+        // check if file_path is availables
         kmStrw path = _rcv_ctrl.file_path; path.ReplaceRvrs(L'/', L'\0');
 
         kmFile::MakeDirs(path);
@@ -2320,6 +2372,9 @@ public:
     };
     void RcvBlk(const kmAddr4& addr)
     {
+        // check rcv state
+        if(_rcv_state != 1) return;
+
         // get from buffer
         kmNetHd hd{}; uint iblk; ushort byte; char* data;
 
@@ -2356,7 +2411,7 @@ public:
             _rcv_state = 2;
             _rcv_blk.Close(); 
 
-            // rename            
+            // rename
             kmStrw  cur_name = _rcv_ctrl.file_path;
             kmStrw& new_name = _rcv_ctrl.file_path; new_name.Cutback(4);
 
@@ -2420,6 +2475,25 @@ public:
             if(_snd_bsf(i) == 0) { _snd_ieb = i; _snd_state = 2; return; }  // not yet done
         }
         _snd_ieb = _snd_blk._blk_n; if(_snd_state != 0) _snd_state = 4; // sending done
+    };
+
+    ////////////////////////////////////////////////////////////////////
+    // cmd 5 : empty queue
+    //  * Note that this will be called in kmNet::_snd_thrd
+    void SndEmptyQue(ushort src_id, ushort des_id, const kmAddr4& addr)
+    {
+        // set buffer
+        const char cmd_id = 5; kmNetHd hd = { src_id, des_id, _ptc_id, cmd_id, 0, 0};
+
+        *_net << hd;
+
+        // send buffer
+        _net->Sendto(addr);
+    };
+    void RcvEmptyQue(const kmAddr4& addr)
+    {
+        // call cb
+        (*_ptc_cb)(_net, 5, nullptr);
     };
 };
 
@@ -2502,7 +2576,6 @@ public:
         if (kmSock::GetIntfAddr(_addr, _mac) == false)
             cout<<"Get Local Address Error!!"<<endl;
 
-
         // create buffer and header pointer
         // * Note that 64 KB is max size of UDP packet
         _rcv_buf.Recreate(64*1024);
@@ -2549,8 +2622,6 @@ protected:
 
             while(1)
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                
                 // check time out for rcvblk of ptc_file
                 if(net->IsTomOut())
                 {
@@ -2558,11 +2629,29 @@ protected:
                     net->SetTomOff();
                     net->_ptc_file.StopRcv();
                 }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+                // timer control
+                if     (timer.IsNotStarted() && net->IsTomOff()) timer.Start();
+                else if(timer.IsStarted()    && net->IsTomOn())  timer.Stop ();
+
+                // do extra work when nothing to do
+                if(net->IsTomOff() && timer.sec() > 3.f)
+                {
+                    net->DoExtraWork();
+                }
+                else                
+                {    
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
             }
             print("* end of rto thread\n");
         }, this);
         _tom_thrd.WaitStart();
     };
+
+    // virtual function for extra work
+    virtual void DoExtraWork() { std::this_thread::sleep_for(std::chrono::milliseconds(100)); };
 
     // create receiving thread
     void CreateRcvThrd()
@@ -2624,6 +2713,9 @@ protected:
                     net->_snd_que_lck.Unlock(); //////////// unlock
 
                     net->SendFile(snd->src_id, snd->path, snd->name, snd->prm0, snd->prm1);
+                    
+                    // send emptyque if there is no more file to send
+                    if(net->_snd_que.N() == 0) net->NotifyEmptyQue(snd->src_id);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -2728,7 +2820,7 @@ protected:
     };
 
     // callback function for ptc_file
-    //  cmd_id  1: rcv preblk, 2: receiving, 3: rcv done,  4: rcv failure
+    //  cmd_id  1: rcv preblk, 2: receiving, 3: rcv done,  4: rcv failure, 5: emtpy equeue
     //         -1: snd preblk,              -3: snd done, -4: snd failure
     static int cbRcvPtcFileStt(kmNetBase* net, char cmd_id, void* arg)
     {
@@ -2767,7 +2859,7 @@ protected:
     virtual void vcbRcvPtcData(ushort src_id, uchar data_id, kmNetBuf& buf) {};
 
     // virtual callback for ptc_file
-    //  cmd_id  1: rcv preblk, 2: receiving, 3: rcv done,  4: rcv failure
+    //  cmd_id  1: rcv preblk, 2: receiving, 3: rcv done,  4: rcv failure, 5 : empty queue
     //         -1: snd preblk,              -3: snd done, -4: snd failure
     virtual void vcbRcvPtcFile(ushort src_id, char cmd_id, int prm0, int prm1) {}; 
 
@@ -2837,7 +2929,7 @@ public:
 
         // connect to addr
         ushort des_id; kmMacAddr des_mac; 
-        
+
         kmT2(des_id, des_mac) = _ptc_cnnt.Connect(src_id, addr, name, tout_msec);
 
         // post processing
@@ -2926,7 +3018,7 @@ public:
     // send file through ptc_file
     //   prm0, prm1 : additional parameters (optional)
     //   return : 0 (sending failed), 1 (sending is successful)
-    int SendFile(ushort src_id, kmStrw& path, int prm0 = 0, int prm1 = 0)
+    int SendFile(ushort src_id, kmStrw path, int prm0 = 0, int prm1 = 0)
     {
         kmStrw name = path.SplitRvrs(L'/');
 
@@ -2936,7 +3028,7 @@ public:
     // send file through ptc_file
     //   prm0, prm1 : additional parameters (optional)
     //   return : 0 (sending failed), 1 (sending is successful)
-    int SendFile(ushort src_id, kmStrw& path, kmStrw& name, int prm0 = 0, int prm1 = 0)
+    int SendFile(ushort src_id, const kmStrw& path, const kmStrw& name, int prm0 = 0, int prm1 = 0)
     {
         // get id
         kmNetId& id = _ids(src_id);
@@ -2947,7 +3039,7 @@ public:
 
     // send file through ptc_file with seperated thread    
     //   prm0, prm1 : additional parameters (optional)
-    void EnqueueSndFile(ushort src_id, kmStrw& path, int prm0 = 0, int prm1 = 0)
+    void EnqueueSndFile(ushort src_id, kmStrw path, int prm0 = 0, int prm1 = 0)
     {
         kmStrw name = path.SplitRvrs(L'/');
 
@@ -2956,11 +3048,21 @@ public:
 
     // send file through ptc_file with seperated thread
     //   prm0, prm1 : additional parameters (optional)
-    void EnqueueSndFile(ushort src_id, kmStrw& path, kmStrw& name, int prm0 = 0, int prm1 = 0)
+    void EnqueueSndFile(ushort src_id, const kmStrw& path, const kmStrw& name, int prm0 = 0, int prm1 = 0)
     {
         _snd_que_lck.Lock();   ////////////////// lock
         _snd_que    .Enqueue(kmNetSndFile({src_id, path, name, prm0, prm1}));
         _snd_que_lck.Unlock(); ////////////////// unlock
+    };
+
+    // send empty queue
+    void NotifyEmptyQue(ushort src_id)
+    {
+        // get id
+        kmNetId& id = _ids(src_id);
+
+        // send noti for empty queue
+        _ptc_file.SndEmptyQue(src_id, id.des_id, id.addr);
     };
 
     kmStrw getHostName()
@@ -2983,7 +3085,6 @@ public:
 
         if(_pkey.IsValid() == false)
         {
-            //print("* failed to get pkey\n");
             return 0;
         }
         _pkey.Print();
@@ -2995,8 +3096,6 @@ public:
     int RequestAddr(kmNetKey key, kmMacAddr mac)
     {
         _ptc_nkey.ReqAddr(key, mac);
-
-        //addr.Print();
 
         return 1;
     };
