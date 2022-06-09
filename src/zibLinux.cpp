@@ -54,8 +54,8 @@ public:
 */
     int checkConnect()
     {
-        if (_net._users.N1() > 0) return 1;
-        return 0;
+        if (_net.GetIds().N() < 1) return 0;
+        return 1;
     }
 
     int connectToWan() { return 1;} // TODO
@@ -70,6 +70,8 @@ public:
 */
     int uploadFile(int fid)
     {
+        if (_net.GetIds().N() < 1) return 0;
+
         _net.SendFile(0, 0, fid);
         return 1;
     }
@@ -86,6 +88,8 @@ public:
     int uploadFiles(vector<int> vFid)
     {
         if (vFid.size() < 1) return 0;
+
+        if (_net.GetIds().N() < 1) return 0;
 
         for (auto fid : vFid)
             _net.SendFile(0, 0, fid);
@@ -119,6 +123,7 @@ public:
 
             while (i < j)
             {
+                // Decen
                 while (files(v[i]).date.GetInt() > files(v[pivot]).date.GetInt())
                 {
                     i++;
@@ -134,6 +139,7 @@ public:
                     v[j] = temp;
                 }
 /*
+                // Incre
                 while (files(v[i]).date.GetInt() <= files(v[pivot]).date.GetInt() && i < last)
                 {
                     i++;
@@ -168,7 +174,7 @@ public:
     vector<int> getTotalFileListDateSorted()
     {
         vector<int> v;
-        if (_net.GetIds().N() <= 0) return v;
+        if (_net._users.N1() < 1) return v;
 
         zbFiles& files = _net._users(0).strgs(0).files;
         if (files.N1() < 1) return v;
@@ -195,7 +201,7 @@ public:
 */
     int getFileInfo(int fid, FileInfos& infos)
     {
-        if (_net.GetIds().N() <= 0) return 0;
+        if (_net._users.N1() < 1) return 0;
 
         zbFiles& files = _net._users(0).strgs(0).files;
         if (fid >= files.N1()) return 0;
@@ -222,8 +228,8 @@ public:
 @return 
 */
     int requestFile(int fid_s, int fid_e)
-    {   
-        if (_net.GetIds().N() <= 0) return 0;
+    {
+        if (_net.GetIds().N() < 1) return 0;
         
         zbFiles& files = _net._users(0).strgs(0).files;
         if (fid_s < 0 || fid_s > fid_e) return 0;
@@ -243,7 +249,7 @@ public:
 */
     int requestThumbnail(int fid_s, int fid_e)
     {
-        if (_net.GetIds().N() <= 0) return 0;
+        if (_net.GetIds().N() < 1) return 0;
 
         zbFiles& files = _net._users(0).strgs(0).files;
         if (fid_s < 0 || fid_s > fid_e) return 0;
@@ -261,6 +267,8 @@ public:
 */
     int updateFileList()
     {
+        if (_net._users.N1() < 1) return 0;
+
         _net.UpdateFile(false);
         return 1;
     }
@@ -273,6 +281,8 @@ public:
 */
     int backUpAll()
     {
+        if (_net.GetIds().N() < 1) return 0;
+
         _net.UpdateFileOfList(0, 0); // default true
         return 1;
     }
@@ -286,7 +296,7 @@ public:
 */
     int checkBackUpComplete()
     {
-        if (_net.GetIds().N() <= 0) return 0;
+        if (_net._users.N1() < 1) return 0;
 
         return _net.checkStateOfLastFile(0, 0);
     }
@@ -302,6 +312,8 @@ public:
 */
     int deleteDeviceFile(int fid)
     {
+        if (_net._users.N1() < 1) return 0;
+
         _net.DeleteFileClt(0, 0, fid);
         return 1;
     }
@@ -316,6 +328,8 @@ public:
 */
     int deleteServerFile(int fid)
     {
+        if (_net.GetIds().N() < 1) return 0;
+
         _net.BanBkup(0, 0, fid);
         return 1;
     }
@@ -329,6 +343,8 @@ public:
 */
     int allowFileBackUp(int fid)
     {
+        if (_net._users.N1() < 1) return 0;
+
         _net.LiftBanBkup(0, 0, fid);
         return 1;
     }
@@ -344,6 +360,8 @@ public:
 */
     int deleteBothFile(int fid)
     {
+        if (_net.GetIds().N() < 1) return 0;
+
         _net.DeleteFileBoth(0, 0, fid);
         return 1;
     }
@@ -357,6 +375,8 @@ public:
 */
     int saveFileList()
     {
+        if (_net._users.N1() < 1) return 0;
+
         _net.SaveFileList(0, 0);
         return 1;
     }
@@ -583,21 +603,21 @@ int main() try
 
     sleep(5);
 
-    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
     linuxNet.updateFileList();
-    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
     linuxNet.backUpAll();
     //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
     //linuxNet.deleteDeviceFile(0);
     //linuxNet.deleteServerFile(1);
     sleep(10);
-    linuxNet.updateFileList();
-    linuxNet.backUpAll();
+    cout<<linuxNet.checkConnect()<<endl;
+
     for (auto v : linuxNet.getTotalFileListDateSorted())
         cout<<v<<" ";
     cout<<endl;
     sleep(1);
-    cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
 
     //linuxNet.requestThumbnail(0, 0);
 
