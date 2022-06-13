@@ -26,7 +26,7 @@ public:
 /**
 @brief  zibNet 의 초기화 작업 담당
 */
-    void init(const zbNet::PathSet& pathSet) { CreateChild(pathSet); };
+    void init(const zbNet::PathSet& pathSet, const string& mac) { CreateChild(pathSet, mac); };
 
 /**
 @brief   Lan Network 을 통한 집서버 연결
@@ -412,12 +412,12 @@ public:
     // windows procedure functions
 protected:
     // create child window
-    virtual void CreateChild(const zbNet::PathSet& pathSet)
+    virtual void CreateChild(const zbNet::PathSet& pathSet, const string& mac)
     {
         setlocale(LC_ALL, "");
 
         // init net
-        _net.Init(this, cbRcvNetStt, pathSet);
+        _net.Init(this, cbRcvNetStt, pathSet, mac);
     };
 
     // download files
@@ -593,35 +593,35 @@ int main() try
     paths.path = "/home/kktjin/backup/zibsvr";
     paths.srcpath = "/home/kktjin/backup/image";
     paths.dlpath = "/home/kktjin/backup/download";
+    string mac = "AB12CD3412345678";
 
     zibLinux linuxNet;
-    linuxNet.init(paths);
+    linuxNet.init(paths, mac);
     linuxNet.connectToLan();
 
     // for debug
     //std::thread cli(zibCli, &linuxNet);
 
-    sleep(5);
+    //sleep(5);
 
-    cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
-    linuxNet.updateFileList();
-    cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
-    linuxNet.backUpAll();
+    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    //linuxNet.updateFileList();
+    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
+    //linuxNet.backUpAll();
     //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
     //linuxNet.deleteDeviceFile(0);
     //linuxNet.deleteServerFile(1);
-    sleep(10);
-    cout<<linuxNet.checkConnect()<<endl;
+    //sleep(10);
+    //cout<<linuxNet.checkConnect()<<endl;
 
-    for (auto v : linuxNet.getTotalFileListDateSorted())
-        cout<<v<<" ";
-    cout<<endl;
+    //for (auto v : linuxNet.getTotalFileListDateSorted())
+    //    cout<<v<<" ";
+    //cout<<endl;
     sleep(1);
     //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
 
     //linuxNet.requestThumbnail(0, 0);
 
-    int a = 99;
     while (1) {
         sleep(2);
     }

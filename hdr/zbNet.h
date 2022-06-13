@@ -10,6 +10,7 @@
 // base header
 #include "km7Net.h"
 #include <sstream>
+#include <string>
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // zbNet class
@@ -202,10 +203,11 @@ public:
     kmNetNks    _nks;        // net key signaling function only for zbMode::nks
 
     // init
-    void Init(void* parent, kmNetCb netcb, const PathSet& pathSet)
+    void Init(void* parent, kmNetCb netcb, const PathSet& pathSet, const string& mac)
     {
         // init kmnet
         kmNet::Init(parent, netcb);
+        setMacAddr(mac);
 
         setFilePath(pathSet);
 /*
@@ -1427,6 +1429,27 @@ public:
         return _nks.Load(path.P());
     }
     catch(kmException) { return 0; };
+
+    /////////////////////////////////////////////////////////////
+    // mac address
+    void setMacAddr(const string& mac)
+    {
+        if (mac.length() > 16) return;
+
+        uint64 longMac = strtoull(mac.c_str(), nullptr, 16); // string, idx, base
+        
+        //macAddr.Set((uchar*)ifr[1].ifr_hwaddr.sa_data);
+        char tmpMac[8] = {(char)(longMac>>56&0xFF),
+                          (char)(longMac>>48&0xFF),
+                          (char)(longMac>>40&0xFF),
+                          (char)(longMac>>32&0xFF),
+                          (char)(longMac>>24&0xFF),
+                          (char)(longMac>>16&0xFF),
+                          (char)(longMac>>8&0xFF),
+                          (char)(longMac&0xFF)};
+
+        _mac.Set((uchar*)tmpMac);
+    }
 };
 
 #endif /* __zbNet_H_INCLUDED_2022_04_07__ */

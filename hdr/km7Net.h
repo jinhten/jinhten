@@ -119,8 +119,8 @@ public:
 
     kmMacAddr(const kmMacAddr& a) { i64 = a.i64; };
 
-    // set from char[6] or uchar[6]
-    void Set(uchar* addr) { for(int i = 0; i < 6; ++i) c[i] = *(addr + i); };
+    // set from char[8] or uchar[8]
+    void Set(uchar* addr) { for(int i = 0; i < 8; ++i) c[i] = *(addr + i); };
 
     // assignment operator
              kmMacAddr& operator=(const          kmMacAddr& a)          { i64 = a.i64; return *this; };    
@@ -133,11 +133,11 @@ public:
     // get string
     kmStra GetStr() const
     {
-        return kmStra("%02X-%02X-%02X-%02X-%02X-%02X", c[0], c[1], c[2], c[3], c[4], c[5]);
+        return kmStra("%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
     };
     kmStrw GetStrw() const
     {
-        return kmStrw(L"%02X-%02X-%02X-%02X-%02X-%02X", c[0], c[1], c[2], c[3], c[4], c[5]);
+        return kmStrw(L"%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
     };
 };
 typedef kmMat1<kmMacAddr> kmMacAddrs;
@@ -210,7 +210,7 @@ public:
     /////////////////////////////////
     // static functions
 
-    static bool GetIntfAddr(kmAddr4& ipAddr, kmMacAddr& macAddr)
+    static bool GetIntfAddr(kmAddr4& ipAddr)
     {
         char buf[8192] = {0,};
         struct ifconf ifc = {0,};
@@ -259,13 +259,6 @@ public:
         }
 
         // display result
-        //macAddr.Set((uchar*)ifr[1].ifr_hwaddr.sa_data);
-        char mac[6] = {1,1, (char)((addr->sin_addr.s_addr>>24)&0xFF)
-                          , (char)((addr->sin_addr.s_addr>>16)&0xFF)
-                          , (char)((addr->sin_addr.s_addr>>8)&0xFF)
-                          , (char)((addr->sin_addr.s_addr&0xFF))};
-        macAddr.Set((uchar*)mac);
-
         kmAddr4 tempIpAddr(ip, DEFAULT_PORT);
         ipAddr = tempIpAddr;
 
@@ -2573,7 +2566,7 @@ public:
         _name = getHostName();
 
         // get address
-        if (kmSock::GetIntfAddr(_addr, _mac) == false)
+        if (kmSock::GetIntfAddr(_addr) == false)
             cout<<"Get Local Address Error!!"<<endl;
 
         // create buffer and header pointer
