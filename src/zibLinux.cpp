@@ -26,7 +26,11 @@ public:
 /**
 @brief  zibNet 의 초기화 작업 담당
 */
-    void init(const zbNet::PathSet& pathSet, const string& deviceID, const string& deviceName) { CreateChild(pathSet, deviceID, deviceName); };
+    void init(const zbNet::PathSet& pathSet, const string& deviceID, const string& deviceName)
+    {
+        _net.SetNksAddr(kmAddr4(52, 231, 35, 166, DEFAULT_PORT));
+        CreateChild(pathSet, deviceID, deviceName);
+    };
 
 /**
 @brief   LAN Network 을 통한 집서버 연결
@@ -38,12 +42,27 @@ public:
 */
     int connectToLan()
     {
+        if (_net._users.N1() > 0) return -1;
+
         // auto connection
         ConnectBroadcast();
 
         if (_net._users.N1() > 0) return 1;
 
         return 0;
+    }
+
+/**
+@brief   집서버 연결
+         1. 마지막으로 연결한 집서버 ip/port로 연결시도
+         2. 실패하면 Broad cast로 연결시도
+         3. 실패하면 RTC로 pkey와 mapping되는 집서버 ip/port를 수신하여 연결시도
+@return  0 : 집서버와 연결된 적이 없는 경우.
+         1 : 집서버 Connect에 성공한 경우.
+*/
+    int connectWithZibSvr()
+    {
+        return _net.Connect(0);
     }
 
 /**
@@ -534,6 +553,8 @@ protected:
     {
         return 1;
     };
+    // * Note that when you receive rcvinfo, 
+    // * you have to decide wheter to request register or not.
     void cbRcvInfo()
     {
         zbNetInfo& info = _net.GetLastRcvInfo(); // opposite's info
@@ -554,27 +575,29 @@ protected:
     {
         static kmThread thrd; thrd.Begin([](zibLinux* lnx)
         {
-            print("* connecting with udp broadcasting\n");
+            int n = lnx->_net.ConnectNew();
 
-            kmAddr4s   addrs; 
-            kmMacAddrs macs; 
-
-            int n = lnx->_net.GetAddrsInLan(addrs, macs, DEFAULT_PORT);
-            
-            for(int i = 0; i < n; ++i)
-            {
-                if(lnx->_net.FindId(macs(i)) > -1) continue; // check if already connected
-
-                if(lnx->Connect(addrs(i)) < 0)
-                {
-                    print("* connecting failed (to %s)\n", addrs(i).GetStr().P());
-                }
-            }
+            print("* number of devices connected : %d\n", n);
         },this);
     };
 
     // connect with ip addr
     int Connect(kmAddr4 addr) { return _net.Connect(addr, 500.f); };
+
+    // connect with input
+    void ConnectIn()
+    {
+        char bufin[128];
+
+        cout << "> input ip (ex : 10.114.75.49) : ";
+        cin  >> bufin;
+
+        kmAddr4 addr(bufin, _net._port);
+
+        cout << "* connect to " << addr.GetStr().P() << endl;
+
+        Connect(addr);
+    }
 };
 
 /////////////////////////////////////////////////////////////////
@@ -623,14 +646,11 @@ int main() try
 
     zibLinux linuxNet;
     linuxNet.init(paths, deviceID, deviceName);
-    linuxNet.connectToLan();
+    //linuxNet.connectToLan();
+    linuxNet.connectWithZibSvr();
 
     // for debug
     //std::thread cli(zibCli, &linuxNet);
-
-    sleep(5);
-
-    linuxNet.sendPing();
 
     while (1) {
         sleep(2);

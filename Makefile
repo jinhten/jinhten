@@ -19,8 +19,9 @@ OPTION   += -Wall -g -Wl,--no-keep-memory,--reduce-memory-overheads \
 			-static-libstdc++ #-heap=4294967296 
 
 #CXXFLAGS += -std=c++1z -Wall -g \
-
 CXXFLAGS += -std=c++20 \
+
+CXXFLAGS += -std=c++2a \
 			$(DEFINE) \
 			$(OPTION) \
 			-I./hdr \

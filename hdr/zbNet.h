@@ -244,18 +244,6 @@ public:
                 }
             }
         }    
-
-        // create network key table only for nks
-        if(_mode == zbMode::nks)
-        {
-            if(LoadNks() == 0) _nks.Create();
-        }
-
-        // request pkey to nks svr
-        if(_mode == zbMode::svr && _pkey.IsValid() == false)
-        {
-            //if(RequestPkey() == 1) SaveSetting(); 
-        }
     };
 
     // get functions
