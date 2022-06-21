@@ -53,7 +53,7 @@
 
 //#define DEFAULT_PORT 60215
 #define DEFAULT_PORT 60165
-#define RTC_PORT 60165
+#define RTC_PORT 9090
 
 #define INVALID_SOCKET -1
 
@@ -150,17 +150,18 @@ class kmAddr4
 {
 public:
     union { uint ip; uchar c[4];}; // compatible with sockaddr_in.sin_addr.s_addr
-    ushort port;                   // compatible with sockaddr_in.sin_port
+    ushort port{};                 // compatible with sockaddr_in.sin_port
     kmAddr4State state{};          // optional * Note that it's 8 byte even without this
 
     // constructor
-    kmAddr4()                        { ip = 0;                     port = 0;};
-    kmAddr4(int     a, ushort p = 0) { ip = a;                     port = htons(p);};
-    kmAddr4(uint    a, ushort p = 0) { ip = a;                     port = htons(p);};
-    kmAddr4(ulong   a, ushort p = 0) { ip = a;                     port = htons(p);};
-    kmAddr4(in_addr a, ushort p = 0) { ip = a.s_addr;              port = htons(p);};    
-    kmAddr4(LPCSTR  s, ushort p = 0) { inet_pton(AF_INET, s, &ip); port = htons(p);};
-    //kmAddr4(LPCWSTR s, ushort p = 0) { InetPtonW(AF_INET, s, &ip); port = htons(p);};
+    kmAddr4()                        :                ip(0)        {};
+    kmAddr4(kmAddr4State state)      : state(state) , ip(0)        {};
+    kmAddr4(int     a, ushort p = 0) : port(hton(p)), ip(a)        {};
+    kmAddr4(uint    a, ushort p = 0) : port(hton(p)), ip(a)        {};
+    kmAddr4(ulong   a, ushort p = 0) : port(hton(p)), ip(a)        {};
+    kmAddr4(in_addr a, ushort p = 0) : port(hton(p)), ip(a.s_addr) {};
+    kmAddr4(LPCSTR  s, ushort p = 0) : port(hton(p)) { inet_pton(AF_INET, s, &ip); };
+    //kmAddr4(LPCWSTR s, ushort p = 0) : port(hton(p)) { InetPtonW(AF_INET, s, &ip); };
     kmAddr4(sockaddr_in saddr)
     {
         ip = saddr.sin_addr.s_addr; port = saddr.sin_port;
@@ -174,6 +175,7 @@ public:
     uchar operator()(int i) { return c[i]; };
 
     bool operator==(const kmAddr4& b) { return (ip == b.ip && port == b.port); };
+    bool operator!=(const kmAddr4& b) { return (ip != b.ip || port != b.port); };
 
     // get sockaddr_in
     // * note that if ip is 0, it measns that INADDR_ANY
@@ -191,6 +193,25 @@ public:
     kmStrw GetStrw  () const { return kmStrw(L"%d.%d.%d.%d:%d",c[0], c[1], c[2],c[3], ntohs(port)); };
     kmStra GetIpStr () const { return kmStra( "%d.%d.%d.%d"   ,c[0], c[1], c[2],c[3]); };
     kmStrw GetIpStrw() const { return kmStrw(L"%d.%d.%d.%d"   ,c[0], c[1], c[2],c[3]); };
+
+    // get state
+    bool isValid  () const { return state == kmAddr4State::valid;   };
+    bool IsInvalid() const { return state == kmAddr4State::invalid; };
+    bool IsPending() const { return state == kmAddr4State::pending; };
+
+    // set state
+    void SetValid  () { state = kmAddr4State::valid;   };
+    void SetInvalid() { state = kmAddr4State::invalid; };
+    void SetPending() { state = kmAddr4State::pending; };
+
+    // get port
+    ushort GetPort() const { return ntoh(port); };
+
+    // set port
+    void SetPort(ushort p) { port = hton(p); };
+
+    // print
+    void Print() { print("* addr : %s\n", GetStr().P()); };
 };
 typedef kmMat1<kmAddr4> kmAddr4s;
 
@@ -348,6 +369,30 @@ public:
         ASSERTFA(_sck != INVALID_SOCKET, "kmSock::GetSocket in 178");
     };
 
+    // get rcv buffer size
+    int GetRcvBufByte()
+    {
+        int byte = 0; socklen_t len = sizeof(byte);
+
+        getsockopt(_sck, SOL_SOCKET, SO_RCVBUF, (char*)&byte, &len);
+
+        return byte;
+    };    
+
+    // get snd buffer size
+    int GetSndBufByte()
+    {
+        int byte = 0; socklen_t len = sizeof(byte);
+
+        getsockopt(_sck, SOL_SOCKET, SO_SNDBUF, (char*)&byte, &len);
+
+        return byte;
+    };
+
+    // set rcv and snd buffer size
+    int SetRcvBufByte(int byte) { return setsockopt(_sck, SOL_SOCKET, SO_RCVBUF, (char*)&byte, sizeof(byte)); };
+    int SetSndBufByte(int byte) { return setsockopt(_sck, SOL_SOCKET, SO_SNDBUF, (char*)&byte, sizeof(byte)); };
+
     // set socket option
     void SetSckOptBroadcast(int on = true)
     {
@@ -490,7 +535,7 @@ public:
     // send to (for udp broadcast) using local broadcast address (ex. 10.114.75.255)
     template<typename T> int SendtoBroadcastLocal(const kmMat1<T>& data, ushort port = DEFAULT_PORT)
     {
-        kmAddr4      addr = kmSock::GetBrdcAddr(DEFAULT_PORT);
+        kmAddr4      addr = kmSock::GetBrdcAddr(port);
         sockaddr_in saddr = addr.GetSckAddr();
 
         print("* broadcasting to %s\n", addr.GetStr().P());
@@ -831,18 +876,22 @@ public:
 // kmNet's time-out monitoring class
 class kmNetTom
 {
-public:
+protected:
     double  _tout_sec = 2;
     kmTimer _timer;
+    kmLock  _lck;
 
-    inline void Set(double tout_sec) { _tout_sec = tout_sec; };
+public:
+    void Set(double tout_sec) { _tout_sec = tout_sec; };
 
-    inline void On()  { _timer.Start(); };
-    inline void Off() { _timer.Stop (); };
+    double GetToutSec() { return _tout_sec; };
 
-    inline bool IsOut() { return _timer.IsStarted() && (_timer.sec() > _tout_sec); };
-    inline bool IsOff() { return _timer.IsNotStarted(); };
-    inline bool IsOn () { return _timer.IsStarted(); };
+    void On()  { kmLockGuard grd = _lck.Lock(); _timer.Start(); };
+    void Off() { kmLockGuard grd = _lck.Lock(); _timer.Stop (); };
+
+    bool IsOut() { kmLockGuard grd = _lck.Enter(); return _timer.IsStarted() && (_timer.sec() > _tout_sec); };
+    bool IsOff() { kmLockGuard grd = _lck.Enter(); return _timer.IsNotStarted(); };
+    bool IsOn () { kmLockGuard grd = _lck.Enter(); return _timer.IsStarted(); };
 };
 
 // kmNetBase class for protocol
@@ -869,7 +918,7 @@ public:
         const int ret = _sck.Sendto(_snd_buf, addr); 
         UnlockSnd();  return ret; ///////////////////////////// unlock
     };
-    int SendtoBroadcast()
+    int SendtoBroadcast(ushort port = DEFAULT_PORT)
     {
         _sck.SetSckOptBroadcast(1);
         
@@ -901,6 +950,9 @@ public:
     inline bool IsTomOn ()             { return _tom.IsOn (); };
     inline bool IsTomOff()             { return _tom.IsOff(); };
     inline bool IsTomOut()             { return _tom.IsOut(); };
+
+    // only for debug
+    kmSock& GetSock() { return _sck; };
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -983,9 +1035,9 @@ public:
     {
         switch(_type)
         {
-        case kmNetKeyType::invalid : return "invalid"; 
-        case kmNetKeyType::pkey    : return "pkey"; 
-        case kmNetKeyType::vkey    : return "vkey"; 
+        case kmNetKeyType::invalid : return "invalid";
+        case kmNetKeyType::pkey    : return "pkey";
+        case kmNetKeyType::vkey    : return "vkey";
         case kmNetKeyType::tkey    : return "tkey";
         }
         return "";
@@ -998,14 +1050,35 @@ public:
     void Print() { print("* key : %s\n", GetStr().P()); };
 };
 
+class kmNetKeyRnw
+{
+public:
+    kmThread _thrd; 
+    uint     _rnw_sec     = 30;         // renewal time in sec
+    uint     _rnw_min_sec = 10;
+    uint     _rnw_max_sec = (60*60*24); // 24 hour
+
+    void Start(kmNetKey* key)
+    {
+        _thrd.Begin([](kmNetKeyRnw* rnw, kmNetKey* key)
+        {
+            kmTimer timer(1);
+
+            while(1)
+            {
+            }
+        }, this, key);
+    };
+};
+
 // net key element class for nks server... 32 byte
 class kmNetKeyElm
 {
 public:
-    kmNetKey      key {};
-    kmMacAddr     mac {};
-    kmDate        date{};
-    kmAddr4       addr{};
+    kmNetKey  key {};  // key
+    kmMacAddr mac {};  // mac of key owner
+    kmDate    date{};  // data when addr was updated
+    kmAddr4   addr{};  // ip address
 
     // constructor
     kmNetKeyElm() {};
@@ -1014,9 +1087,9 @@ public:
         key(key), mac(mac), date(date), addr(addr) {};
 
     // member functions
-    bool IsValid  () { return addr.state == kmAddr4State::valid;   };
-    bool IsPending() { return addr.state == kmAddr4State::pending; };
-    bool IsInvalid() { return addr.state == kmAddr4State::invalid; };
+    bool IsValid  () { return addr.isValid  (); };
+    bool IsPending() { return addr.IsPending(); };
+    bool IsInvalid() { return addr.IsInvalid(); };
 
     kmStra GetStr()
     {
@@ -1063,27 +1136,54 @@ public:
     };
 
     // find net key element with key
-    kmNetKeyElm Find(kmNetKey key, kmMacAddr mac)
+    kmNetKeyElm& Find(kmNetKey key, kmMacAddr mac)
     {    
         const auto idx0 = key.GetIdx0();
         const auto idx1 = key.GetIdx1();
 
+        static kmNetKeyElm keyelm_invalid(kmAddr4State::invalid);
+
         // check index range
         if(idx0 >=  _tbl.N1() || idx1 >= _tbl(idx0).N1())
         {
-            return kmAddr4State::invalid;
+            return keyelm_invalid;
         }
         // check pswd
         if(_tbl(idx0)(idx1).key.GetPswd() != key.GetPswd())
         {
-            print("** password is wrong\n"); return kmAddr4State::invalid;
+            print("** password is wrong\n"); return keyelm_invalid;
         }
         // check mac
         if(_tbl(idx0)(idx1).mac != mac)
         {
-            print("** mac is wrong\n"); return kmAddr4State::invalid;
+            print("** mac is wrong\n"); return keyelm_invalid;
         }
         return _tbl(idx0)(idx1);
+    };
+
+    // find address with key
+    inline kmAddr4 GetAddr(kmNetKey key, kmMacAddr mac)
+    {
+        return Find(key, mac).addr;
+    };
+
+    // update address
+    //   return : -1 (invalid key), 0 (not updated), 1 (updated since addr was changed)
+    int Update(kmNetKey key, kmMacAddr mac, kmAddr4 addr)
+    {
+        // find key element
+        kmNetKeyElm& ke = Find(key, mac);
+
+        if(ke.IsInvalid()) return -1;
+
+        // check if address is changed
+        if(addr == ke.addr) return 0;
+
+        // update address
+        ke.addr = addr;
+        ke.date.SetCur();
+
+        return 1;
     };
 
     // save key table
@@ -1134,6 +1234,9 @@ public:
     kmMacAddr    _rcv_mac;
     kmNetKey     _rcv_key;
     kmAddr4      _rcv_addr;
+    uint         _rcv_vld_sec; // valid time in sec
+    uint         _rcv_vld_cnt; // valid count
+    int          _rcv_sig_flg; // sig flag 0 : addr not changed, 1: change
 
     kmNetKey     _snd_key;
     kmAddr4      _snd_addr;
@@ -1147,16 +1250,18 @@ public:
         case 1: RcvKey    (addr); break;
         case 2: RcvReqAddr(addr); break;
         case 3: RcvAddr   (addr); break;
+        case 4: RcvSig    (addr); break;
+        case 5: RcvRepSig (addr); break;
         }
     };
     ///////////////////////////////////////
     // interface functions
 
-    // request pkey to key server
-    kmNetKey ReqKey(kmNetKeyType keytype, float tout_sec = 1.f)
+    // request pkey to nks server (svr -> nks)
+    kmNetKey ReqKey(kmNetKeyType keytype, uint vld_sec = 0, uint vld_cnt = 0, float tout_sec = 1.f)
     {
         // send request to key server
-        SndReqKey(keytype);
+        SndReqKey(keytype, vld_sec, vld_cnt);
 
         // wait for timeout
         kmTimer time(1); _rcv_key_flg = 0;
@@ -1172,7 +1277,7 @@ public:
         return _rcv_key;
     };
 
-    // request addr to key server by key
+    // request addr to nks server by key (clt -> nks)
     kmAddr4 ReqAddr(kmNetKey key, kmMacAddr mac, float tout_sec = 1.f)
     {
         // send request to nks server
@@ -1187,18 +1292,26 @@ public:
         {
             print("** kmNetPtcNkey::ReqAddr - timeout\n"); 
             
-            return kmAddr4();
+            return kmAddr4(kmAddr4State::invalid);
         }
         return _rcv_addr;
     };
 
+    // send signal to nks server (svr -> nks)
+    inline void SendSig(kmNetKey key, kmMacAddr mac) { SndSig(key, mac); };
+
+    // reply signal (nks -> svr)
+    //   flg 0 : addr was not changed, 1: changed
+    inline void ReplySig(kmAddr4 addr, int flg) { SndRepSig(addr, flg); };
+
+protected:
     ////////////////////////////////////////
-    // cmd 0 : request key
-    void SndReqKey(kmNetKeyType keytype)
+    // cmd 0 : request key (svr -> nks)
+    void SndReqKey(kmNetKeyType keytype, uint vld_sec = 0, uint vld_cnt = 0)
     {
         kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 0, (uchar)keytype, 0};
 
-        *_net << hd << _net->_mac;
+        *_net << hd << _net->_mac << vld_sec << vld_cnt;
 
         _net->Sendto(_nks_addr);
     };
@@ -1206,7 +1319,7 @@ public:
     {
         kmNetHd hd{};
 
-        *_net >> hd >> _rcv_mac;
+        *_net >> hd >> _rcv_mac >> _rcv_vld_sec >> _rcv_vld_cnt;
 
         _rcv_keytype = (kmNetKeyType)hd.opt;
         _rcv_addr    = addr;
@@ -1218,7 +1331,7 @@ public:
     };
 
     ////////////////////////////////////////
-    // cmd 1 : send key
+    // cmd 1 : send key (nks -> svr)
     void SndKey(const kmAddr4& addr) // nks server
     {    
         kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 1, 0, 0};
@@ -1237,7 +1350,7 @@ public:
     };
 
     ////////////////////////////////////////
-    // cmd 2 : request addr by key to nks server
+    // cmd 2 : request addr by key (clt -> nks)
     void SndReqAddr(kmNetKey key, kmMacAddr mac)
     {
         kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 2, 0, 0};
@@ -1259,7 +1372,7 @@ public:
     };
 
     ////////////////////////////////////////
-    // cmd 3 : send addr
+    // cmd 3 : send addr (nks -> clt)
     void SndAddr(const kmAddr4& addr) // nks server
     {    
         kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 3, 0, 0};
@@ -1275,6 +1388,46 @@ public:
         *_net >> hd >> _rcv_addr;
 
         _rcv_addr_flg = 1;
+    };
+
+    ////////////////////////////////////////
+    // cmd 4 : send signal (svr -> nks)
+    void SndSig(kmNetKey key, kmMacAddr mac)
+    {
+        kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 4, 0, 0};
+
+        *_net << hd << key << mac;
+
+        _net->Sendto(_nks_addr);
+    };
+    void RcvSig(const kmAddr4& addr) // nks server
+    {
+        kmNetHd hd{};
+
+        *_net >> hd >> _rcv_key >> _rcv_mac;
+
+        _rcv_addr = addr;
+
+        (*_ptc_cb)(_net, 4, 0);
+    };
+
+    ////////////////////////////////////////
+    // cmd 5 : reply signal (nks --> svr)
+    void SndRepSig(const kmAddr4& addr , int flg) // nks server
+    {
+        kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 5, 0, 0};
+
+        *_net << hd << flg;
+
+        _net->Sendto(addr);
+    };
+    void RcvRepSig(const kmAddr4& addr)
+    {
+        kmNetHd hd{}; 
+
+        *_net >> hd >> _rcv_sig_flg;
+
+        (*_ptc_cb)(_net, 5, 0);
     };
 };
 
@@ -1302,9 +1455,10 @@ public:
     //   addrs        : output address
     //   macs         : output mac addresses
     //   timeout_msec : timeout in msec
+    //   port         : port for broadcasting
     //
     //   return : number of addrs
-    int GetAddrs(kmAddr4s& addrs, kmMacAddrs& macs, float tout_msec = 100.f)
+    int GetAddrs(kmAddr4s& addrs, kmMacAddrs& macs, ushort port = DEFAULT_PORT, float tout_msec = 100.f)
     {
         // init output parameters
         _addrs = &addrs; _addrs->Recreate(0, 16);
@@ -1312,7 +1466,7 @@ public:
         _wait  = 1;
 
         // send UDP broadcasting
-        SndReqAck();
+        SndReqAck(port);
 
         // wait for timeout
         kmTimer time(1);
@@ -1325,7 +1479,7 @@ public:
 
     ////////////////////////////////////////
     // cmd 0 : request ack
-    void SndReqAck()
+    void SndReqAck(ushort port)
     {
         // set buffer
         kmNetHd hd = { 0xffff, 0xffff, _ptc_id, 0, 0, 0};
@@ -1333,7 +1487,7 @@ public:
         *_net << hd << _net->_mac;
 
         // send as broadcast mode
-        _net->SendtoBroadcast();
+        _net->SendtoBroadcast(port);
     };
     void RcvReqAck(const kmAddr4& addr)
     {
@@ -1342,7 +1496,7 @@ public:
 
         *_net >> hd >> mac;
 
-        if(mac == _net->_mac) return; // to prevent self-ack.
+        if(mac == _net->_mac) return; // to prevent self-ack
 
         // send ack
         SndAck(addr);
@@ -1684,7 +1838,7 @@ public:
         SndPreBlk(src_id, des_id, addr, blk_n, blk_byte, byte, prm0, prm1);
 
         // waiting pre ack... cmd 1, state 2
-        const float preack_tout_msec = 500.f; // time out for preack
+        const float preack_tout_msec = 1000.f; // time out for preack
 
         kmTimer timer(1);
         while(_snd_state == 1 && timer.msec() < preack_tout_msec) std::this_thread::sleep_for(std::chrono::milliseconds(0));
@@ -2031,6 +2185,7 @@ public:
     kmFileBlk _snd_blk;        // sending file block buffer
     kmMat1bit _snd_bsf;        // sending block state flag (1: request, 0: not)
     uint      _snd_state  = 0; // 0 : not begin, 1: waiting pre-ack, 2: sending blocks, 3: waiting ack, 4: done
+    uint      _snd_id     = 0; // to avoid mismatching between preblk and preack
     int64     _snd_byte   = 0;
     uint      _snd_ieb    = 0; // iblk of 1st empty block
     ushort    _snd_src_id = 0;
@@ -2064,13 +2219,15 @@ public:
     //    ex) d:/folder/sub_folder/file1.exe 
     //           path = d:/folder, name = sub_folder/file1.exe
     // 
-    //   return : 0 (sending failed), 1 (sending is successful)
-    int Send(ushort src_id, ushort des_id, kmAddr4 addr, const kmStrw& path, const kmStrw& name, int prm0 = 0, int prm1 = 0)
+    //   return : < 0 (sending failed), 1 (sending is successful)
+    //            -1 (snd_state is not 0), -2 (preack timeout), -3 (preack wrong), -4 (preack reject), -5 (skip max)
+    int Send(ushort src_id, ushort des_id, kmAddr4 addr, const kmStrw& path, const kmStrw& name,
+             int prm0 = 0, int prm1 = 0)
     {
         // check state
         if(_snd_state != 0)
         {
-            print("[kmNetPtcFile::File in 1764 _snd_state is not zero\n"); return 0;
+            print("[kmNetPtcFile::File in 1764 _snd_state is not zero\n"); return -1;
         }
         _snd_state = 1; // waiting pre-ack
 
@@ -2102,17 +2259,25 @@ public:
         (*_ptc_cb)(_net, -1, (void*)&_snd_ctrl);
 
         // waiting pre ack... cmd 1, state 2
-        const float preack_tout_sec = 10.f; // time out for preack
+        const float preack_tout_sec = 1.f; // time out for preack
 
         kmTimer bps_timer, timer(1);
         while(_snd_state == 1 && timer.sec() < preack_tout_sec) std::this_thread::sleep_for(std::chrono::milliseconds(0));
 
         if(_snd_state != 2) // time out and sending failed
         {
-            if(_snd_state == 1) print("* sending failed by timeout for preack\n"); 
-            else                print("* sending has been rejected\n");
-            _snd_state = 0; _snd_blk.Close();
-            return 0;
+            if(_snd_state == 1) // preack timeout
+            {
+                _snd_state = 0; _snd_blk.Close(); return -2;
+            }
+            else if(_snd_state == -1) // preack is wrong
+            {
+                SndBlk(src_id, des_id, 0, addr, 0, true); return -3;
+            }
+            else // reject
+            {
+                _snd_state = 0; _snd_blk.Close(); return -4;
+            }
         }        
         const float echo_usec = (float)timer.usec();
 
@@ -2172,7 +2337,7 @@ public:
                 {
                     _snd_state = 0;  _snd_blk.Close();
                     (*_ptc_cb)(_net, -4, (void*)&_snd_ctrl);
-                    return 0;
+                    return -1;
                 };
                 // update cw_n and out_t_sec
                 out_t_msec = MIN(out_t_msec*1.5f, 100.f);
@@ -2233,13 +2398,15 @@ public:
     {
         kmStrw name = path.SplitRvrs(L'/');
 
+        if(name.N1() == 0) name = path.SplitRvrs(L'/');
+
         return Send(src_id, des_id, addr, path, name, prm0, prm1);
     };
 
     // stop receving procedure
     void StopRcv()
-    {    
-        _rcv_state = 0; _rcv_blk.Close();
+    {
+        _net->SetTomOff(); _rcv_blk.Close(); _rcv_state = 0;
         (*_ptc_cb)(_net, 4, 0);
     };
 
@@ -2247,7 +2414,10 @@ public:
     // cmd 1 : pre block
     void SndPreBlk(ushort src_id, ushort des_id, const kmAddr4& addr, uint blk_n, 
                    uint blk_byte, int64 byte, const kmStrw& file_str, int prm0 = 0, int prm1 = 0)
-    {    
+    {
+        // set id
+        _snd_id = kmrand(0u, end32u>>1);
+        
         // set buffer
         const char cmd_id = 1; kmNetHd hd = {src_id, des_id, _ptc_id, cmd_id, 0, 0}; 
 
@@ -2261,13 +2431,21 @@ public:
     };
     void RcvPreBlk(const kmAddr4& addr)
     {
+        // check state
+        if(_rcv_state != 0)
+        {
+            kmNetHd hd{}; *_net >> hd;
+            SndPreAck(hd.des_id, hd.src_id, addr, 0, 0); // to reject
+            print("[kmNetPtcFile::RcvPreBlk in 1932] _rcv_state is not zero\n"); return;
+        }
+
         // get from buffer
-        kmNetHd hd{}; uint blk_n, blk_byte; int64 byte; kmStrw file_str;
+        kmNetHd hd{}; uint blk_n, blk_byte, snd_id; int64 byte; kmStrw file_str;
 
         ushort file_n = 0;
         ushort file_name[256] = {0,};
         wchar  wfile_name[128] = {0,};
-        (*_net >> hd >> blk_n >> blk_byte >> byte >> _rcv_prm0 >> _rcv_prm1).GetData(file_name, file_n);
+        (*_net >> hd >> blk_n >> blk_byte >> byte >> snd_id >> _rcv_prm0 >> _rcv_prm1).GetData(file_name, file_n);
         convWC2to4(file_name, wfile_name, file_n);
         file_str.SetStr(wfile_name);
 
@@ -2282,12 +2460,7 @@ public:
         cout<<cname<<endl<<endl;
         }
 
-        // check state
-        if(_rcv_state != 0)
-        {    
-            SndPreAck(hd.des_id, hd.src_id, addr, 0); // to reject
-            print("[kmNetPtcFile::RcvPreBlk in 1932] _rcv_state is not zero\n"); return;
-        }
+        // set state
         _rcv_state  = 1;          // waiting blk
         _rcv_src_id = hd.des_id;
 
@@ -2300,7 +2473,7 @@ public:
 
         if(_rcv_ctrl.reject == 1)
         {    
-            SndPreAck(hd.des_id, hd.src_id, addr, 0);
+            SndPreAck(hd.des_id, hd.src_id, addr, snd_id, 0);
             _rcv_state = 0; return;
         }
 
@@ -2317,19 +2490,19 @@ public:
         _rcv_ieb    = 0;
 
         // send ack
-        SndPreAck(hd.des_id, hd.src_id, addr);
+        SndPreAck(hd.des_id, hd.src_id, addr, snd_id);
 
         _net->SetTom(3.f);
     };
 
     ///////////////////////////////////////////////
     // cmd 2 : pre ack
-    void SndPreAck(ushort src_id, ushort des_id, const kmAddr4& addr, uint accept = 1)
+    void SndPreAck(ushort src_id, ushort des_id, const kmAddr4& addr, uint snd_id, uint accept = 1)
     {
         // set buffer
         const char cmd_id = 2; kmNetHd hd = {src_id, des_id, _ptc_id, cmd_id, 0, 0};
 
-        *_net << hd << accept;
+        *_net << hd << snd_id << accept;
 
         // send buffer
         _net->Sendto(addr);
@@ -2337,22 +2510,35 @@ public:
     void RcvPreAck(const kmAddr4& addr)
     {
         // get from buffer
-        kmNetHd hd{}; uint accept;
+        kmNetHd hd{}; uint accept, snd_id;
 
-        *_net >> hd >> accept;
+        *_net >> hd >> snd_id >> accept;
 
-        // set state 
-        if(_snd_state == 1) _snd_state = (accept == 1) ? 2 : 0;        
+        // check state
+        if(_snd_state != 1) return;
+
+        // check snd_id and accept
+        if(accept == 1)
+        {    
+            if(snd_id == _snd_id) _snd_state = 2;
+            else
+            {
+                _snd_state = -1; 
+                print("** snd_id is wrong (%d != %d)\n", _snd_id, snd_id);                
+            };
+        }
+        else _snd_state = 0; // reject
     };
 
     ///////////////////////////////////////////////
     // cmd 3 : blk
-    void SndBlk(ushort src_id, ushort des_id, uint iblk, const kmAddr4& addr, bool reqack = false)
+    void SndBlk(ushort src_id, ushort des_id, uint iblk, const kmAddr4& addr, bool reqack = false, bool reject = false)
     {
         // set snd_buf
         const char cmd_id = 3; kmNetHd hd = { src_id, des_id, _ptc_id, cmd_id, 0, 0};
 
         if(reqack) hd.SetReqAck(); 
+        if(reject) hd.SetReject();
 
         const ushort blk_byte = _snd_blk.GetBlkByte(iblk);
 
@@ -2372,6 +2558,13 @@ public:
         kmNetHd hd{}; uint iblk; ushort byte; char* data;
 
         *_net >> hd >> iblk >> byte; data = _net->_rcv_buf.End1();
+
+        // check reject
+        if(hd.IsReject())
+        {
+            StopRcv();
+            return;
+        }
 
         // copy data to _rcv_buf
         if(_rcv_bsf(iblk) == 0)
@@ -2538,7 +2731,9 @@ protected:
     kmLock               _snd_que_lck; // mutex for _snd_que
 
     // nks members
-    kmNetKey    _pkey;                 // own pkey
+    kmNetKey    _pkey; // own pkey
+    kmNetKey    _vkey; // volatile key
+    kmNetKeyRnw _rnw;  // pkey renewal
 
     // protocol members
     kmMat1<kmNetPtc*> _ptcs;           // protocol array
@@ -2558,12 +2753,13 @@ public:
     virtual ~kmNet() { Close(); };
 
     // init
-    void Init(void* parent = nullptr, kmNetCb netcb = nullptr)
+    void Init(void* parent = nullptr, kmNetCb netcb = nullptr, ushort port = DEFAULT_PORT)
     {
         // set parent and callback
         _parent = parent;
         _netcb  = netcb;
-        _name = getHostName();
+
+        if (_name.GetLen() < 1) _name = getHostName();
 
         // get address
         if (kmSock::GetIntfAddr(_addr) == false)
@@ -2611,32 +2807,29 @@ protected:
         _tom_thrd.Begin([](kmNet* net)
         {
             print("* tom thread starts\n");
-            kmTimer timer(1);
+            kmTimer ext_timer; // timer for extra work
 
             while(1)
             {
-                // check time out for rcvblk of ptc_file
-                if(net->IsTomOut())
+                if(net->IsTomOn()) // check time out for rcvblk of ptc_file
                 {
-                    print("** receiving failed with timeout (%.2fsec)\n", net->_tom._tout_sec);                    
-                    net->SetTomOff();
-                    net->_ptc_file.StopRcv();
+                    if(net->IsTomOut())
+                    {
+                        print("** receiving failed with timeout (%.2fsec)\n", net->_tom.GetToutSec());
+                        net->_ptc_file.StopRcv(); // including tom off
+                    }
+                    // timer control
+                    if(ext_timer.IsStarted()) ext_timer.Stop();
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-                // timer control
-                if     (timer.IsNotStarted() && net->IsTomOff()) timer.Start();
-                else if(timer.IsStarted()    && net->IsTomOn())  timer.Stop ();
-
-                // do extra work when nothing to do
-                if(net->IsTomOff() && timer.sec() > 3.f)
+                else
                 {
-                    net->DoExtraWork();
+                    // do extra work
+                    if(ext_timer.sec() > 120.f) net->DoExtraWork();
+
+                    // timer control
+                    if(ext_timer.IsNotStarted()) ext_timer.Start();
                 }
-                else                
-                {    
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // because frequent monitoring isn't required
             }
             print("* end of rto thread\n");
         }, this);
@@ -2701,14 +2894,27 @@ protected:
                 {
                     net->_snd_que_lck.Lock();   /////////////  lock
 
-                    kmNetSndFile* snd = net->_snd_que.Dequeue();
+                    kmNetSndFile snd = *net->_snd_que.Dequeue();
 
                     net->_snd_que_lck.Unlock(); //////////// unlock
 
-                    net->SendFile(snd->src_id, snd->path, snd->name, snd->prm0, snd->prm1);
-                    
+                    int ret = 0, max_cnt = 32;
+
+                    for(int cnt = 0; cnt < max_cnt && ret != 1; ++cnt)
+                    {    
+                        //   1 (sending is successful)
+                        //  -1 (snd_state is not 0), -2 (preack timeout), -3 (preack wrong), -4 (preack reject), -5 (skip max)
+                        ret = net->SendFile(snd.src_id, snd.path, snd.name, snd.prm0, snd.prm1);
+
+                        if     (ret == -1) { std::this_thread::sleep_for(std::chrono::milliseconds(10));  max_cnt = 64;}
+                        else if(ret == -2) { std::this_thread::sleep_for(std::chrono::milliseconds(1));   max_cnt =  3;}
+                        else if(ret == -3) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); max_cnt =  3;}
+                        else if(ret == -4) { std::this_thread::sleep_for(std::chrono::milliseconds(500)); max_cnt = 32;}
+                        else if(ret == -5) break;
+                    }
+
                     // send emptyque if there is no more file to send
-                    if(net->_snd_que.N() == 0) net->NotifyEmptyQue(snd->src_id);
+                    if(net->_snd_que.N() == 0) net->NotifyEmptyQue(snd.src_id);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -2906,9 +3112,9 @@ public:
     // interface functions for communication
 
     // get addrs with ptc_brdc (UDP broadcasting)
-    int GetAddrsInLan(kmAddr4s& addrs, kmMacAddrs& macs, float tout_msec = 100.f)
+    int GetAddrsInLan(kmAddr4s& addrs, kmMacAddrs& macs, ushort port, float tout_msec = 100.f)
     {
-        return _ptc_brdc.GetAddrs(addrs, macs, tout_msec);
+        return _ptc_brdc.GetAddrs(addrs, macs, port, tout_msec);
     };
 
     // connect to new device with ptc_cnnt
@@ -3010,7 +3216,8 @@ public:
 
     // send file through ptc_file
     //   prm0, prm1 : additional parameters (optional)
-    //   return : 0 (sending failed), 1 (sending is successful)
+    //   return : < 0 (sending failed), 1 (sending is successful)
+    //             -1 (snd_state is not 0), -2 (preack timeout), -3 (preack wrong), -4 (preack reject), -5 (skip max)
     int SendFile(ushort src_id, kmStrw path, int prm0 = 0, int prm1 = 0)
     {
         kmStrw name = path.SplitRvrs(L'/');
@@ -3020,7 +3227,8 @@ public:
 
     // send file through ptc_file
     //   prm0, prm1 : additional parameters (optional)
-    //   return : 0 (sending failed), 1 (sending is successful)
+    //   return : < 0 (sending failed), 1 (sending is successful)
+    //            -1 (snd_state is not 0), -2 (preack timeout), -3 (preack wrong), -4 (preack reject), -5 (skip max)
     int SendFile(ushort src_id, const kmStrw& path, const kmStrw& name, int prm0 = 0, int prm1 = 0)
     {
         // get id
@@ -3069,7 +3277,7 @@ public:
         return ret;
     }
 
-    // request pkey
+    // request pkey (svr -> nks)
     //   return : 0 (failed), 1 (successful)
     int RequestPkey()
     {
@@ -3084,13 +3292,42 @@ public:
         return 1;
     };
 
-    // request address to nks
+    // request vkey
+    //  vld_sec : valid time in sec
+    //  vld_cnt : valid count
+    // 
     //   return : 0 (failed), 1 (successful)
-    int RequestAddr(kmNetKey key, kmMacAddr mac)
+    int RequestVkey(uint vld_sec = 3600, uint vld_cnt = 1)
     {
-        _ptc_nkey.ReqAddr(key, mac);
+        // get key from keysvr
+        _vkey = _ptc_nkey.ReqKey(kmNetKeyType::vkey, vld_sec, vld_cnt);
 
+        if(_vkey.IsValid() == false)
+        {
+            return 0;
+        }
+        _vkey.Print();
         return 1;
+    };
+
+    // request address to nks (clt -> nks)
+    //   return : addr of key (if successful) or invalid addr (if it fails)
+    kmAddr4 RequestAddr(kmNetKey key, kmMacAddr mac)
+    {
+        return _ptc_nkey.ReqAddr(key, mac);
+    };
+
+    // send sig to nks (svr -> nks)
+    void SendSig()
+    {
+        _ptc_nkey.SendSig(_pkey, _mac);
+    };
+
+    // reply signal (nks -> svr)
+    //   flg 0 : addr was not changed, 1: changed
+    void ReplySig(kmAddr4 addr, int flg)
+    {
+        _ptc_nkey.ReplySig(addr, flg); 
     };
 };
 

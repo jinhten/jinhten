@@ -192,40 +192,47 @@ public:
         string path = "";
         string srcpath = "";
         string dlpath = "";
+        string cachepath = "";
     };
 
     zbMode      _mode = zbMode::clt;  // svr (server), clt (client), nks ( net key signaling server)
-    kmStrw      _path{};     // zibsvr root's path
-    zbUsers     _users;
-    kmStrw      _srcpath{};  // image source path ... client only
-    kmStrw      _dwnpath{};  // download path ... client only
-    zbNetInfo   _rcvinfo;    // last received info
-    kmNetNks    _nks;        // net key signaling function only for zbMode::nks
+    ushort    _port{DEFAULT_PORT}; // port
+    kmStrw    _path{};           // zibsvr root's path
+    zbUsers   _users;             
+    kmStrw    _srcpath{};        // image source path ... client only
+    kmStrw    _dwnpath{};        // download path ... client only
+    kmStrw    _cachepath{};      // app cache path ... client only
+    zbNetInfo _rcvinfo;          // last received info    
+    kmNetNks  _nks;              // net key signaling function only for zbMode::nks
 
     // init
-    void Init(void* parent, kmNetCb netcb, const PathSet& pathSet, const string& mac)
+    void Init(void* parent, kmNetCb netcb, const PathSet& pathSet, const string& deviceID, const string& deviceName)
     {
+        setDeviceID(deviceID);
+        setDeviceName(deviceName);
+
         // init kmnet
-        kmNet::Init(parent, netcb);
-        setMacAddr(mac);
+        kmNet::Init(parent, netcb, _port);
 
         setFilePath(pathSet);
+
 /*
         sockaddr_in saddr;
         saddr.sin_family = AF_INET;
         saddr.sin_port = RTC_PORT;
-        saddr.sin_addr.s_addr = 0x3448720A; // 10.114.75.52
+        //saddr.sin_addr.s_addr = 0x3448720A; // 10.114.75.52
+        saddr.sin_addr.s_addr = 0x0100007F; // 127.0.0.1
         kmAddr4 nks_addr(saddr);
         kmNet::SetNksAddr(nks_addr);
-*/
 
         // load setting... _pkey
-        //LoadSetting(); _pkey.Print();
-        
+        LoadSetting(); _pkey.Print();
+*/
+
         // load users and strgs
         //if (_mode == zbMode::svr || _mode == zbMode::clt)
         {
-            if (LoadUsers() < 1) { sleep(1); return; }
+            LoadUsers();
 
             for(int uid = 0; uid < _users.N1(); ++uid)
             {
@@ -247,7 +254,7 @@ public:
         // request pkey to nks svr
         if(_mode == zbMode::svr && _pkey.IsValid() == false)
         {
-            if(RequestPkey() == 1) SaveSetting(); 
+            //if(RequestPkey() == 1) SaveSetting(); 
         }
     };
 
@@ -366,6 +373,8 @@ public:
         case 1 : RcvNkeyKey    (); break;
         case 2 : RcvNkeyReqAddr(); break;
         case 3 : RcvNkeyAddr   (); break;
+        case 4 : RcvNkeySig    (); break;
+        case 5 : RcvNkeyRepSig (); break;
         }
     };
     void RcvNkeyReqKey() // _rcv_addr, _rcv_mac ->_snd_key
@@ -377,15 +386,129 @@ public:
     };
     void RcvNkeyReqAddr() // _rcv_key, _rcv_mac -> _snd_addr
     {
-        _ptc_nkey._snd_addr = _nks.Find(_ptc_nkey._rcv_key, _ptc_nkey._rcv_mac).addr;
+        _ptc_nkey._snd_addr = _nks.GetAddr(_ptc_nkey._rcv_key, _ptc_nkey._rcv_mac);
     };
     void RcvNkeyAddr()
     {
     };
+    void RcvNkeySig() // only for nks
+    {
+        print("*** rcvnkeysig\n");
 
+        if(_mode != zbMode::nks) return;        
+
+        // update key
+        int flg = _nks.Update(_ptc_nkey._rcv_key, _ptc_nkey._rcv_mac, _ptc_nkey._rcv_addr);
+
+        if     (flg == 0) { print("*** key was not changed\n"); }
+        else if(flg == 1) { print("*** key was changed\n");     }
+
+        if(flg >= 0) ReplySig(_ptc_nkey._rcv_addr, flg);
+    };
+    void RcvNkeyRepSig()
+    {
+        int flg = _ptc_nkey._rcv_sig_flg;
+
+        if     (flg == 0) { print("*** key was not changed\n"); }
+        else if(flg == 1) { print("*** key was changed\n");     }
+    };
 
     /////////////////////////////////////////////////////////////
     // network interface functions
+
+    // connect
+    //  return : src_id (if connecting failed, it will be -1)
+    int Connect(const kmAddr4 addr, float tout_msec = 100.f)
+    {
+        return kmNet::Connect(addr, _name, tout_msec);
+    };
+
+    // connect to new device in lan
+    int ConnectNew()
+    {
+        // get addrs in lan
+        kmAddr4s addrs; kmMacAddrs macs;
+
+        int n = GetAddrsInLan(addrs, macs, _port);
+
+        // connect to new devices
+        int cnnt_n = 0;
+
+        for(int i = 0; i < n; ++i)
+        {
+            if(FindId(macs(i)) > -1) continue; // check if already connected
+
+            if(Connect(addrs(i)) < 0)
+            {
+                print("** connect failed (to %s)\n", addrs(i).GetStr().P());
+            }
+            else ++cnnt_n;
+        }
+        return cnnt_n;
+    };
+
+    // connect with uid
+    //  return : src_id (if connecting failed, it will be -1)
+    int Connect(int uid)
+    {
+        int ret;
+
+        ret = ConnectLastAddr(uid); if(ret >= 0) return ret;
+        ret = ConnectInLan   (uid); if(ret >= 0) return ret;
+        ret = ConnectInWan   (uid); if(ret >= 0) return ret;
+
+        print("** connecting fails\n");
+
+        return -1;
+    };
+
+    // connect with last connected address
+    //  return : src_id (if connecting failed, it will be -1)
+    int ConnectLastAddr(int uid)
+    {
+        if(uid >= _users.N1()) return -1;
+
+        return Connect(_users(uid).addr);
+    };
+
+    // connect in lan
+    //  return : src_id (if connecting failed, it will be -1)
+    int ConnectInLan(int uid)
+    {
+        if(uid >= _users.N1()) return -1;
+
+        // get addrs in lan
+        kmAddr4s addrs; kmMacAddrs macs;
+
+        int n = GetAddrsInLan(addrs, macs, _port);
+
+        // find uid with mac and connect
+        for(int i = 0; i < n; ++i) if(macs(i) == _users(uid).mac)
+        {
+            print("** connect to %s in lan\n", addrs(i).GetStr().P());
+
+            return Connect(addrs(i));
+        }
+        return -1;
+    };
+
+    // connect in wan
+    //  return : src_id (if connecting failed, it will be -1)
+    int ConnectInWan(int uid)
+    {
+        if(uid >= _users.N1()) return -1;
+
+        // check key
+        if(!_users(uid).key.IsValid()) return -1;
+
+        // request addr with key
+        kmAddr4 addr = RequestAddr(_users(uid).key, _users(uid).mac);
+
+        if(!addr.isValid()) return -1;
+
+        // connect
+        return Connect(addr);
+    };
 
     // send my info to opposite    ...data_id = 0
     void SendInfo(ushort src_id)
@@ -431,11 +554,15 @@ public:
         buf >> mac >> name;
 
         // check
-        if(_mode != zbMode::svr) return; // I'm not a server
         if(FindUser(mac) >= 0)   return; // already registered
+        if(_mode == zbMode::nks) return;
 
-        // add users
-        zbRole role = (_users.N1() == 0) ? zbRole::owner : zbRole::member;
+        // set role        
+        zbRole role = zbRole::family;
+
+        if(_mode == zbMode::svr) role = (_users.N1() == 0) ? zbRole::owner : zbRole::member;
+            
+        // add users        
         zbUser user(mac, name, role, _ids(src_id).addr, src_id);
 
         AddUser(user);
@@ -794,10 +921,6 @@ public:
 
         // make strg folder
         kmFile::MakeDir(strg.path.P());
-
-        // make thumbnail folder
-        kmStrw thumbnail_path(L"%S/.thumb",strg.path.P());
-        kmFile::MakeDir(thumbnail_path.P());
 
         // add strg
         return (int)strgs.PushBack(strg);
@@ -1392,6 +1515,9 @@ public:
         _dwnpath.SetStr(temp);
         kmStrw dwpath(L"%S",temp);
         kmFile::MakeDir(dwpath.P());
+
+        mbstowcs(temp, pathSet.cachepath.c_str(), pathSet.cachepath.length()*2);
+        _cachepath.SetStr(temp);
     };
 
     // check id
@@ -1431,12 +1557,12 @@ public:
     catch(kmException) { return 0; };
 
     /////////////////////////////////////////////////////////////
-    // mac address
-    void setMacAddr(const string& mac)
+    // mac address - device id
+    void setDeviceID(const string& deviceID)
     {
-        if (mac.length() > 16) return;
+        if (deviceID.length() > 16) return;
 
-        uint64 longMac = strtoull(mac.c_str(), nullptr, 16); // string, idx, base
+        uint64 longMac = strtoull(deviceID.c_str(), nullptr, 16); // string, idx, base
         
         //macAddr.Set((uchar*)ifr[1].ifr_hwaddr.sa_data);
         char tmpMac[8] = {(char)(longMac>>56&0xFF),
@@ -1449,6 +1575,12 @@ public:
                           (char)(longMac&0xFF)};
 
         _mac.Set((uchar*)tmpMac);
+    }
+    void setDeviceName(const string& deviceName)
+    {
+        wchar wname[100] = {0,};
+        mbstowcs(wname, deviceName.c_str(), deviceName.length());
+        _name.SetStr(wname);
     }
 };
 

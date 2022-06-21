@@ -4276,8 +4276,6 @@ public:
     {
         if(kmFile::Exist(path.P())) return 1;
 
-        if(path.ReplaceRvrs(L'/', L'\0') == 0) return 0;
-
         if(MakeDirs(path) == 1)
         {
             path(path.GetLen()-1) = L'/';
@@ -5714,6 +5712,7 @@ public:
     kmMdfType _type{};
     kmDate    _date{};
     kmGps     _gps{};
+    //kmMdfOrnt _ornt{};
 
     // constructor
     kmMdf() {};    
@@ -5797,6 +5796,8 @@ public:
         {
             fobj.Read(mk, 2); // read marker
 
+            int64 eop = ReadEop(fobj); // end of position
+
             if(mk[0] == 0xff) switch(mk[1])
             {
             case 0xE0 : ReadJpgApp0(fobj); break; // app0
@@ -5804,93 +5805,62 @@ public:
             case 0xDB : ReadJpgDqt (fobj); break; // define quantization table
             case 0xC0 : ReadJpgSof0(fobj); break; // start of frame (baseline DCT)
             case 0xC2 : ReadJpgSof2(fobj); break; // start of frame (progressive DCT)
-            case 0xC4 : ReadJpgDht (fobj); break; // define huffman table            
+            case 0xC4 : ReadJpgDht (fobj); break; // define huffman table
             case 0xDA : ReadJpgSos (fobj); break; // start of scan
             case 0xFE : ReadJpgCmt (fobj); break; // comment
             default   : print("*** %c\n", mk[1]);
             }
             else break;
+
+            fobj.Seek(eop);
         }
     };
 
     // read end of position
     int64 ReadEop(kmFile& fobj)
     {
-        int64 pos0 = fobj.GetPos();
+        const int64 pos0 = fobj.GetPos();
 
         uchar buf[2] = {}; fobj.Read(buf, 2);
 
-        ushort len = ((ushort)buf[0]<<8) | buf[1];
+        const ushort len = ((ushort)buf[0]<<8) | buf[1];
 
         return len + pos0;
     };
-
+    
     // start of scan
-    void ReadJpgSos(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj); int64 byte = eop - fobj.GetPos() + 2;
-
-        fobj.Seek(eop);    //print("*** read jpg sos : %d byte\n", byte);
-    };
+    void ReadJpgSos(kmFile& fobj) {};
 
     // define quantization table
-    void ReadJpgDqt(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj);
-
-        fobj.Seek(eop);    //print("*** read jpg dqt\n");
-    };
+    void ReadJpgDqt(kmFile& fobj) {};
 
     // define huffman table
-    void ReadJpgDht(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj);
-
-        fobj.Seek(eop);    //print("*** read jpg dht\n");
-    };
+    void ReadJpgDht(kmFile& fobj) {};
 
     // start of frame (baseline DCT)
     void ReadJpgSof0(kmFile& fobj)
     {
-        int64 eop = ReadEop(fobj);
+        fobj.SeekCur(1);
 
-        fobj.Seek(eop);    //print("*** read jpg sof0\n");
+        ushort h_pix, w_pix;
+
+        fobj.Read(&h_pix); fobj.Read(&w_pix);
+
+        h_pix = ((0x00ff&h_pix)<<8) | ((0xff00&h_pix)>>8);
+        w_pix = ((0x00ff&w_pix)<<8) | ((0xff00&w_pix)>>8);
     };
 
     // start of frame (progressive DCT)
-    void ReadJpgSof2(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj);
-
-        fobj.Seek(eop);    //print("*** read jpg sof2\n");
-    };
+    void ReadJpgSof2(kmFile& fobj) {};
 
     // comment
-    void ReadJpgCmt(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj);
-
-        fobj.Seek(eop);// print("*** read jpg comment\n");
-    };
+    void ReadJpgCmt(kmFile& fobj)  {};
 
     // app0 Jfif
-    void ReadJpgApp0(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj);
-
-        fobj.Seek(eop); //print("*** read jpg app0\n");
-    };
+    void ReadJpgApp0(kmFile& fobj) {};
 
     // app1 exif
-    void ReadJpgApp1(kmFile& fobj)
-    {
-        int64 eop = ReadEop(fobj); int64 byte = eop - fobj.GetPos() + 2;
-
-        // read exif
-        ReadExif(fobj);
-
-        fobj.Seek(eop);    //print("*** read jpg app1 : %d byte\n", byte);
-    };
+    void ReadJpgApp1(kmFile& fobj) { ReadExif(fobj); };
 
     // read exif
     void ReadExif(kmFile& fobj)
@@ -5922,8 +5892,45 @@ public:
         {
             fobj.Read(buf, 2); // tag mark   ...0x002A
             fobj.Read(buf, 4); // IFD offset ...0x00000008
+
+            ReadIfdBe(fobj, pos0);
         }
         else print("[kmTiffInfo] it is not tiff\n");
+    };
+
+    // read ifd for big endian
+    void ReadIfdBe(kmFile& fobj, int64 pos0)
+    {    
+        ushort entry_n; fobj.Read(&entry_n); entry_n = ENDIAN16(entry_n); print_i(entry_n);
+
+        for(int i = 0; i < entry_n; ++i)
+        {
+            kmTiffIfd ifd; fobj.Read(&ifd);
+
+            ifd.data  = ENDIAN32(ifd.data);
+            ifd.fmt   = ENDIAN16(ifd.fmt);
+            ifd.obj_n = ENDIAN32(ifd.obj_n);
+            ifd.tag   = ENDIAN16(ifd.tag);
+
+            if(ifd.fmt == 3) ifd.data>>=16; // ushort
+
+            int64 pos_old = fobj.GetPos(); fobj.Seek(pos0).SeekCur(ifd.data);
+
+            switch(ifd.tag)
+            {
+            case 0x010f : ReadIfdMaker(fobj,  ifd); break; 
+            case 0x0110 : ReadIfdModel(fobj,  ifd); break;
+            case 0x0112 : ReadIfdOrnt (fobj,  ifd); break;
+            case 0x0132 : ReadIfdDate (fobj,  ifd); break;
+            case 0x8825 : ReadIfdGps  (fobj, pos0); break;
+            }
+            fobj.Seek(pos_old);
+        }
+        uchar buf[2] = {}; fobj.Read(buf,2);
+
+        ushort len = ((ushort)buf[0]<<8) | buf[1];
+
+        fobj.Seek(pos0 + len).Read(buf,2);
     };
 
     // read ifd for little endian
@@ -5956,19 +5963,19 @@ public:
     void ReadIfdOrnt(kmFile& fobj, kmTiffIfd& ifd) // orientation
     {
         // 1 : upper left, 3: lower right, 6: upper right, 8: lower left
-        ushort ornt = ifd.data;
+        //_ornt = (kmMdfOrnt) ifd.data;
     };
     void ReadIfdMaker(kmFile& fobj, kmTiffIfd& ifd)
     {
-        kmStra maker(ifd.obj_n); fobj.Read(maker.P(), ifd.obj_n);
+        //kmStra maker(ifd.obj_n); fobj.Read(maker.P(), ifd.obj_n);
     };
     void ReadIfdModel(kmFile& fobj, kmTiffIfd& ifd)
     {
-        kmStra model(ifd.obj_n); fobj.Read(model.P(), ifd.obj_n);
+        //kmStra model(ifd.obj_n); fobj.Read(model.P(), ifd.obj_n);
     };
     void ReadIfdDate(kmFile& fobj, kmTiffIfd& ifd)
     {
-        kmStra date(ifd.obj_n); fobj.Read(date.P(), ifd.obj_n);
+        kmStra date(ifd.obj_n); fobj.Read(date.P(), ifd.obj_n); 
 
         _date.Set(date);
     };
@@ -6037,11 +6044,11 @@ public:
     };
     void ReadIfdGpsDate(kmFile& fobj, kmTiffIfd& ifd)
     {
-        kmStra date(ifd.obj_n); fobj.Read(date.P(), ifd.obj_n);
+        //kmStra date(ifd.obj_n); fobj.Read(date.P(), ifd.obj_n);
     };
     void ReadIfdGpsTime(kmFile& fobj, kmTiffIfd& ifd)
     {
-        int rat[6]; fobj.Read(&rat[0], ifd.obj_n*2);
+        //int rat[6]; fobj.Read(&rat[0], ifd.obj_n*2);
     };    
 };
 

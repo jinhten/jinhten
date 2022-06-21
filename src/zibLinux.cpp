@@ -26,10 +26,10 @@ public:
 /**
 @brief  zibNet 의 초기화 작업 담당
 */
-    void init(const zbNet::PathSet& pathSet, const string& mac) { CreateChild(pathSet, mac); };
+    void init(const zbNet::PathSet& pathSet, const string& deviceID, const string& deviceName) { CreateChild(pathSet, deviceID, deviceName); };
 
 /**
-@brief   Lan Network 을 통한 집서버 연결
+@brief   LAN Network 을 통한 집서버 연결
 
 @return  0 : 현재 단말에 등록된 zibServer가 없는 경우. (LAN에 기기가 없을 때)
              이미 연결된 동일한 mac address가 있는 경우.
@@ -58,7 +58,32 @@ public:
         return 1;
     }
 
+/**
+@brief  WAN Network 을 통한 집서버 연결
+
+@return  0 : 현재 단말에 등록된 zibServer가 없는 경우. (한번도 zibServer와 연결한적 없는 경우)
+             zibServer에서 수신한 key가 없는 경우.
+             RTC에서 응답이 없거나 해당 key에 대한 address를 수신하지 못한 경우.
+         1 : zibServer key로 RTC에서 zibServer address를 수신한 경우.
+*/
     int connectToWan() { return 1;} // TODO
+
+/**
+@brief   connection이 여전히 유효한지 packet을 전송하여 응답여부를 확인한다.
+
+@return  0 : 단말에 등록된 zibServer가 없는 경우.
+             zibServer와의 연결이 끊어진 경우.
+             zibServer에서 응답이 없는 경우.
+         1 : zibServer에서 정상적인 응답이 온 경우.
+*/
+    int sendPing()
+    {
+        if (_net._users.N1() < 1 || _net.GetIds().N() < 1) return 0;
+
+        _net.Notify(0, zbNoti::none);
+
+        return 1;
+    }
 
 /**
 @brief  1. 파일 전송, File ID를 입력받아 파일 목록에서 파일 경로를 찾아 서버에 업로드
@@ -412,12 +437,12 @@ public:
     // windows procedure functions
 protected:
     // create child window
-    virtual void CreateChild(const zbNet::PathSet& pathSet, const string& mac)
+    virtual void CreateChild(const zbNet::PathSet& pathSet, const string& deviceID, const string& deviceName)
     {
         setlocale(LC_ALL, "");
 
         // init net
-        _net.Init(this, cbRcvNetStt, pathSet, mac);
+        _net.Init(this, cbRcvNetStt, pathSet, deviceID, deviceName);
     };
 
     // download files
@@ -534,7 +559,7 @@ protected:
             kmAddr4s   addrs; 
             kmMacAddrs macs; 
 
-            int n = lnx->_net.GetAddrsInLan(addrs, macs);
+            int n = lnx->_net.GetAddrsInLan(addrs, macs, DEFAULT_PORT);
             
             for(int i = 0; i < n; ++i)
             {
@@ -549,7 +574,7 @@ protected:
     };
 
     // connect with ip addr
-    int Connect(kmAddr4 addr) { return _net.Connect(addr, _net._name, 500.f); };
+    int Connect(kmAddr4 addr) { return _net.Connect(addr, 500.f); };
 };
 
 /////////////////////////////////////////////////////////////////
@@ -593,34 +618,19 @@ int main() try
     paths.path = "/home/kktjin/backup/zibsvr";
     paths.srcpath = "/home/kktjin/backup/image";
     paths.dlpath = "/home/kktjin/backup/download";
-    string mac = "AB12CD3412345678";
+    string deviceID = "AB12CD3412345678";
+    string deviceName = "한글";
 
     zibLinux linuxNet;
-    linuxNet.init(paths, mac);
+    linuxNet.init(paths, deviceID, deviceName);
     linuxNet.connectToLan();
 
     // for debug
     //std::thread cli(zibCli, &linuxNet);
 
-    //sleep(5);
+    sleep(5);
 
-    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
-    //linuxNet.updateFileList();
-    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
-    //linuxNet.backUpAll();
-    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
-    //linuxNet.deleteDeviceFile(0);
-    //linuxNet.deleteServerFile(1);
-    //sleep(10);
-    //cout<<linuxNet.checkConnect()<<endl;
-
-    //for (auto v : linuxNet.getTotalFileListDateSorted())
-    //    cout<<v<<" ";
-    //cout<<endl;
-    sleep(1);
-    //cout<<linuxNet._net.PrintFileListTest(0, 0)<<endl;
-
-    //linuxNet.requestThumbnail(0, 0);
+    linuxNet.sendPing();
 
     while (1) {
         sleep(2);
