@@ -9,7 +9,6 @@
 
 // base header
 #include "km7Net.h"
-#include <sstream>
 #include <string>
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -17,6 +16,9 @@
 
 //////////////////////////////////////
 // zibsvr file
+
+// zibsvr list type enum class... user list, strg list, file list
+enum class zbListType : short { user, strg, file };
 
 // zibsvr file type enum class... image, movie, data, folder, dummy
 enum class zbFileType : short { image, movie, data, folder, dummy };
@@ -37,8 +39,11 @@ enum class zbFileState : short { bkupno, bkup, bkuponly, deletednc, deleted, bku
 class zbFileFlg
 {
 public:
-    uchar thumb   : 1 = 0; // 0: no thumbnail,  1: there is thumbnail 
-    uchar encrypt : 1 = 0; // 0: not encrypted, 1: encrypted
+    uchar file    : 1 = 0; // 0: no file        1: there is the file
+    uchar thumb   : 1 = 0; // 0: no thumbnail   1: there is the thumbnail 
+    uchar cache   : 1 = 0; // 0: no cache       1: there is the cache
+    uchar encrypt : 1 = 0; // 0: not encrypted  1: encrypted
+    uchar isin    : 1 = 0; // teamperary flag
 };
 
 // zibsvr file class... type, state, flg, encrypt, name, date, gps, crypt
@@ -49,7 +54,7 @@ public:
     zbFileState state  {};  // bkupno, bkup, bkuponly, deletednc, deleted, bkupban, bkupbannc, none
     zbFileFlg   flg    {};  // thumb, encrypted    
     ushort      encrypt{};  // encryption key... reserved
-    kmStrw      name   {};  // relative path from strg.srcpath + name    
+    kmStrw      name   {};  // relative path from strg.srcpath + name
     kmDate      date   {};  // time created or written
     kmGps       gps    {};  // gps info
 };
@@ -86,6 +91,7 @@ public:
         case zbStrgType::pssv : return L"pssv";
         case zbStrgType::imgl : return L"imgl";
         case zbStrgType::imgs : return L"imgs";
+        default: break;
         }
         return L"unknown";
     }
@@ -125,7 +131,7 @@ public:
     kmStrw     path{};      // path of user (full path)
     kmDate     time{};      // last connected time
     kmAddr4    addr{};      // last connected ip
-    ushort     src_id = 0xFFFF; // src_id for _ids
+    ushort     src_id = -1; // src_id for _ids
     zbStrgs    strgs{};     // storage list
     zbShrds    shrds{};     // shared  list
 
@@ -138,9 +144,15 @@ public:
     void ResetTime() { time.SetCur(); };
 
     // display user info
-    void PrintInfo()
+    string PrintInfo()
     {
-        wcout<<L"name : "<<name.P()<<L"\nmac : "<<mac.GetStrw().P()<<L"\nip : "<<addr.GetStrw().P()<<L"\n"<<endl;
+        char cname[300] = {0,};
+        wcstombs(cname, name.P(), name.GetLen());
+        string name(cname);
+
+        ostringstream oss;
+        oss<<"  name : "<<name<<"\n  mac  : "<<mac.GetStr().P()<<"\n  ip   : "<<addr.GetStr().P()<<endl;
+        return oss.str();
     };
 
     // get string for rol
@@ -154,6 +166,7 @@ public:
         case zbRole::svr    : return L"svr";
         case zbRole::family : return L"family";
         case zbRole::guest  : return L"guest";
+        default: break;
         }
         return L"unknown";
     };
@@ -183,6 +196,34 @@ public:
     ushort    src_id{};
 };
 
+// receiving file info
+class zbNetRcvFileInfo
+{
+public:
+    int _uid, _sid, _fid, _opt;
+    int _state = 0;     // 0: none, 1: receving, 2: done
+
+    bool IsReceiving(int uid, int sid, int fid, int opt)
+    {
+        if(_state == 1 && uid == _uid && sid == _sid && fid == _fid && opt == _opt) return true;
+        return false;
+    };
+    bool IsDone(int uid, int sid, int fid, int opt)
+    {
+        if(_state == 2 && uid == _uid && sid == _sid && fid == _fid && opt == _opt) return true;
+        return false;
+    };
+    void SetReceiving(int uid, int sid, int fid, int opt)
+    {
+        _uid = uid; _sid = sid; _fid = fid; _opt = opt; _state = 1;
+    };
+    void SetDone(int uid, int sid, int fid, int opt)
+    {
+        _uid = uid; _sid = sid; _fid = fid; _opt = opt; _state = 2;
+    };
+    void Clear() { _state = 0; }
+};
+
 // zibsvr main class
 class zbNet : public kmNet
 {
@@ -195,15 +236,17 @@ public:
         string cachepath = "";
     };
 
-    zbMode      _mode = zbMode::clt;  // svr (server), clt (client), nks ( net key signaling server)
-    ushort    _port{DEFAULT_PORT}; // port
-    kmStrw    _path{};           // zibsvr root's path
-    zbUsers   _users;             
-    kmStrw    _srcpath{};        // image source path ... client only
-    kmStrw    _dwnpath{};        // download path ... client only
-    kmStrw    _cachepath{};      // app cache path ... client only
-    zbNetInfo _rcvinfo;          // last received info    
-    kmNetNks  _nks;              // net key signaling function only for zbMode::nks
+    zbMode           _mode = zbMode::clt; // svr (server), clt (client), nks ( net key signaling server)
+    ushort           _port{DEFAULT_PORT}; // port                                                       
+    kmStrw           _path{};           // zibsvr root's path
+    zbUsers          _users;
+    kmStrw           _srcpath{};        // image source path ... client only
+    kmStrw           _dwnpath{};        // download path     ... client only
+    kmStrw           _tmppath{};        // temprary path     ... client only
+    zbNetInfo        _rcvinfo;          // last received info
+    kmNetNks         _nks;              // net key signaling function only for zbMode::nks
+    zbNetRcvFileInfo _rcvfile{};        // info of receiving file
+    kmWorks _wrks;                      // worker to send data
 
     // init
     void Init(void* parent, kmNetCb netcb, const PathSet& pathSet, const string& deviceID, const string& deviceName)
@@ -243,13 +286,41 @@ public:
                     LoadFileList(uid,sid);  PrintFileList(uid,sid);
                 }
             }
-        }    
+        }
+
+        // create work thread 
+        _wrks.Create([](kmWork& wrk, zbNet* net)
+        {   
+            ushort src_id; zbRole role; kmAddr4 addr;
+
+            switch(wrk.Id())
+            {
+            case 0: wrk.Get(src_id);       net->SendInfo     (src_id);       break;
+            case 1: wrk.Get(src_id);       net->RequestRegist(src_id);       break;
+            case 2: wrk.Get(src_id, role); net->AcceptRegist (src_id, role); break;
+            case 3: wrk.Get(addr); net->Preconnect (addr); break;
+            default: break;
+            }   
+        }, this);
     };
 
     // get functions
     zbUser&    GetUser (int uid)          { return _users(uid); };
     zbStrg&    GetStrg (int uid, int sid) { return _users(uid).strgs(sid); };
     zbNetInfo& GetLastRcvInfo()           { return _rcvinfo; };
+
+    // get src_id from uid
+    //  return : 0xffff (not available), 0 <= : src_id
+    ushort GetSrcId(int uid)
+    {
+        if(uid < 0 || uid >= _users.N1()) return 0xffff;
+
+        const ushort src_id = _users(uid).src_id;
+
+        if(src_id >= _ids.N1()) return 0xffff;
+
+        return src_id;
+    };
 
     // get files to cope with imgl type
     zbFiles& GetFiles(int uid, int sid)
@@ -263,9 +334,47 @@ public:
         return strg.files;
     };
 
+    // get path... opt : 0 (file), 1 (cache), 2 (thumbnail)
+    kmStrw GetPath(int uid, int sid, int opt = 0)
+    {
+        switch(opt)
+        {
+        case 0: return _users(uid).strgs(sid).srcpath;           // file
+        case 1: return _tmppath;                                 // caching file
+        case 2: return _users(uid).strgs(sid).path + L"/.thumb"; // thumbnail
+        default: break;
+        }
+        return kmStrw();
+    };
+
+    // get full path... opt : 0 (file), 1 (cache), 2 (thumbnail)
+    kmStrw GetFullPath(int uid, int sid, int fid, int opt = 0)
+    {
+        return GetPath(uid,sid,opt) + L"/" + GetFiles(uid, sid)(fid).name;
+    };
+
+/*
+    // set functions
+    void SetPort(ushort port)
+    {
+        if(_port == port) return;
+
+        _addr.SetPort(_port = port); 
+        
+        if(GetSock()._state > 1)
+        {    
+            Close(); Init(_parent, _netcb);
+        }
+    };
+*/
+
+    // enqueue work
+    template<typename... Ts>
+    void EnqueueWork(int id, Ts... args) { _wrks.Enqueue(id, args...); }
+
     ///////////////////////////////////////////////
     // virtual functions for rcv callback
-
+protected:
     // virtual callback for ptc_cnnt
     //   cmd_id will be 1 (rcvaccept) or -1 (sndaccept)
     virtual void vcbRcvPtcCnnt(ushort src_id, char cmd_id)
@@ -278,12 +387,15 @@ public:
 
         if(uid < 0) // no registered user
         {
-            SendInfo(src_id);
+            EnqSendInfo(src_id);
         }
         else 
         {
             _users(uid).src_id = src_id;
+            _users(uid).addr   = id.addr;
             _users(uid).ResetTime();
+
+            SaveUsers();
         }
     };
 
@@ -292,48 +404,69 @@ public:
     {
         switch(data_id)
         {
-        case 0: RcvInfo        (src_id, buf); break;
-        case 1: RcvReqRegist   (src_id, buf); break;
-        case 2: RcvAcceptRegist(src_id, buf); break;
-        case 3: RcvNotify      (src_id, buf); break;
-        case 4: RcvReqList     (src_id, buf); break;
-        case 5: RcvDelFile     (src_id, buf); break;
-        case 6: RcvAckDelFile  (src_id, buf); break;
-        case 7: RcvReqThumb    (src_id, buf); break;
+        case  0: RcvInfo      (src_id, buf); break;
+        case  1: RcvReqRegist (src_id, buf); break;
+        case  2: RcvAcpRegist (src_id, buf); break;
+        case  3: RcvNotify    (src_id, buf); break;
+        case  4: RcvReqFile   (src_id, buf); break;
+        case  5: RcvDelFile   (src_id, buf); break;
+        case  6: RcvAckDelFile(src_id, buf); break;
+        //case  7: RcvReqThumb  (src_id, buf); break;
+        case  8: RcvReqList   (src_id, buf); break;
+        case  9: RcvTxt       (src_id, buf); break;
+        case 10: RcvJson      (src_id, buf); break;
+        default: break;
         }
     };
 
     // virtual callback for ptc_file
     //  cmd_id  1: rcv preblk, 2: receiving, 3: rcv done,  4: rcv failure
     //         -1: snd preblk,              -3: snd done, -4: snd failure
-    virtual void vcbRcvPtcFile(ushort src_id, char cmd_id, int sid, int fid)
+    virtual void vcbRcvPtcFile(ushort src_id, char cmd_id, int* prm)
     {
         kmNetPtcFileCtrl& ctrl = _ptc_file._rcv_ctrl;
         const int         uid  = FindUser(src_id);
 
+        int sid = prm[0], fid = prm[1], opt = prm[2]; // opt : 0 (file), 1 (caching file), 2 (thumbnail)
+
         if(cmd_id == 1) // rcv preblk
         {
-            if(uid < 0) ctrl.Reject(); // src_id is not one of registered users
-            else
+            if(CheckId(uid, sid))
             {
-                //if(sid >= 0) ctrl.SetPath(_users(uid).strgs(sid).srcpath);
-                if(sid >= 0) ctrl.SetPath(_dwnpath);
-                else         ctrl.SetPath(_users(uid).strgs(-sid-1).path + L"/.thumb"); // thumbnail
+                ctrl.SetPath(GetPath(uid, sid, opt));
+
+                _rcvfile.SetReceiving(uid, sid, fid, opt);
             }
+            else  ctrl.Reject(); 
         }
         else if(cmd_id == 3) // rcv done
         {
             // get date from the file
-            kmFileInfo fileinfo(ctrl.file_path); ctrl.file_name.Printf();
+            kmFileInfo fileinfo(ctrl.file_path);
 
             zbFile file = {{}, {}, {}, 0, ctrl.file_name, fileinfo.date};
 
-            if(sid >= 0)
+            _rcvfile.SetDone(uid, sid, fid, opt);
+
+            if(opt == 0) // file
             {
-                AddFile(uid, sid, fid, file);
+                if(!CheckId(uid, sid)) return;
+
+                AddFile(uid, sid, fid, file); SaveFileList(uid, sid);
+            }
+            else if(opt == 1 || opt == 2) // cache
+            {
+                if(!CheckId(uid, sid, fid)) return;
+
+                if(opt == 1) GetFiles(uid, sid)(fid).flg.cache = 1;
+                else         GetFiles(uid, sid)(fid).flg.thumb = 1;
 
                 SaveFileList(uid, sid);
-            }            
+            }
+        }
+        else if(cmd_id == 4) // rcv failure
+        {
+            _rcvfile.Clear();
         }
         else if(cmd_id == 5) // empty queue --> it means that there is no more file to send
         {
@@ -363,10 +496,14 @@ public:
         case 3 : RcvNkeyAddr   (); break;
         case 4 : RcvNkeySig    (); break;
         case 5 : RcvNkeyRepSig (); break;
+        case 6 : RcvNkeyReqAccs(); break;
+        default: break;
         }
     };
     void RcvNkeyReqKey() // _rcv_addr, _rcv_mac ->_snd_key
     {
+        print("**** rcv request key from %s\n", _ptc_nkey._rcv_addr.GetStr().P());
+        
         _ptc_nkey._snd_key = _nks.Register(_ptc_nkey._rcv_mac, _ptc_nkey._rcv_addr);
     };
     void RcvNkeyKey()
@@ -374,6 +511,8 @@ public:
     };
     void RcvNkeyReqAddr() // _rcv_key, _rcv_mac -> _snd_addr
     {
+        print("**** rcv request addr by %s\n", _ptc_nkey._rcv_key.GetStr().P());
+
         _ptc_nkey._snd_addr = _nks.GetAddr(_ptc_nkey._rcv_key, _ptc_nkey._rcv_mac);
     };
     void RcvNkeyAddr()
@@ -383,15 +522,15 @@ public:
     {
         print("*** rcvnkeysig\n");
 
-        if(_mode != zbMode::nks) return;        
+        if(_mode != zbMode::nks) return;
 
         // update key
         int flg = _nks.Update(_ptc_nkey._rcv_key, _ptc_nkey._rcv_mac, _ptc_nkey._rcv_addr);
 
         if     (flg == 0) { print("*** key was not changed\n"); }
-        else if(flg == 1) { print("*** key was changed\n");     }
+        else if(flg == 1) { print("*** key was changed\n"); SaveNks(); }
 
-        if(flg >= 0) ReplySig(_ptc_nkey._rcv_addr, flg);
+        if(flg >= 0) ReplyNksSig(_ptc_nkey._rcv_addr, flg);
     };
     void RcvNkeyRepSig()
     {
@@ -400,110 +539,25 @@ public:
         if     (flg == 0) { print("*** key was not changed\n"); }
         else if(flg == 1) { print("*** key was changed\n");     }
     };
+    void RcvNkeyReqAccs()
+    {
+        static kmAddr4 trg_addr; trg_addr = _ptc_nkey._rcv_addr;
+
+        print("*** rcvnkeyreqaccs : %s\n", trg_addr.GetStr().P());
+
+        // preconnect in work thread
+        EnqPreconnect(trg_addr);
+    };
 
     /////////////////////////////////////////////////////////////
-    // network interface functions
-
-    // connect
-    //  return : src_id (if connecting failed, it will be -1)
-    int Connect(const kmAddr4 addr, float tout_msec = 100.f)
-    {
-        return kmNet::Connect(addr, _name, tout_msec);
-    };
-
-    // connect to new device in lan
-    int ConnectNew()
-    {
-        // get addrs in lan
-        kmAddr4s addrs; kmMacAddrs macs;
-
-        int n = GetAddrsInLan(addrs, macs, _port);
-
-        // connect to new devices
-        int cnnt_n = 0;
-
-        for(int i = 0; i < n; ++i)
-        {
-            if(FindId(macs(i)) > -1) continue; // check if already connected
-
-            if(Connect(addrs(i)) < 0)
-            {
-                print("** connect failed (to %s)\n", addrs(i).GetStr().P());
-            }
-            else ++cnnt_n;
-        }
-        return cnnt_n;
-    };
-
-    // connect with uid
-    //  return : src_id (if connecting failed, it will be -1)
-    int Connect(int uid)
-    {
-        int ret;
-
-        ret = ConnectLastAddr(uid); if(ret >= 0) return ret;
-        ret = ConnectInLan   (uid); if(ret >= 0) return ret;
-        ret = ConnectInWan   (uid); if(ret >= 0) return ret;
-
-        print("** connecting fails\n");
-
-        return -1;
-    };
-
-    // connect with last connected address
-    //  return : src_id (if connecting failed, it will be -1)
-    int ConnectLastAddr(int uid)
-    {
-        if(uid >= _users.N1()) return -1;
-
-        return Connect(_users(uid).addr);
-    };
-
-    // connect in lan
-    //  return : src_id (if connecting failed, it will be -1)
-    int ConnectInLan(int uid)
-    {
-        if(uid >= _users.N1()) return -1;
-
-        // get addrs in lan
-        kmAddr4s addrs; kmMacAddrs macs;
-
-        int n = GetAddrsInLan(addrs, macs, _port);
-
-        // find uid with mac and connect
-        for(int i = 0; i < n; ++i) if(macs(i) == _users(uid).mac)
-        {
-            print("** connect to %s in lan\n", addrs(i).GetStr().P());
-
-            return Connect(addrs(i));
-        }
-        return -1;
-    };
-
-    // connect in wan
-    //  return : src_id (if connecting failed, it will be -1)
-    int ConnectInWan(int uid)
-    {
-        if(uid >= _users.N1()) return -1;
-
-        // check key
-        if(!_users(uid).key.IsValid()) return -1;
-
-        // request addr with key
-        kmAddr4 addr = RequestAddr(_users(uid).key, _users(uid).mac);
-
-        if(!addr.isValid()) return -1;
-
-        // connect
-        return Connect(addr);
-    };
+    // _ptc_data (ptc_id = 2) protocol functions
 
     // send my info to opposite    ...data_id = 0
-    void SendInfo(ushort src_id)
+    void SndInfo(ushort src_id)
     {
         uchar data_id = 0; kmNetBuf buf(256);
 
-        ushort tmpName[20] = {0,};
+        ushort tmpName[MAX_FILE_NAME] = {0,};
         convWC4to2(_name.P(), tmpName, _name.N());
         (buf << _mac).PutData(tmpName, _name.N());
         buf << _mode << (int)_users.N1();
@@ -533,10 +587,12 @@ public:
         convWC4to2(_name.P(), sname, len);
         (buf << _mac).PutData(sname, MIN(64, _name.N()));
 
-        Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
+        Send(src_id, data_id, buf.P(), (ushort)buf.N1()); // no waiting
     };
     void RcvReqRegist(ushort src_id, kmNetBuf& buf)
     {
+        print("**** 3. RcvRegRegist : src_id(%d)\n", src_id);
+
         kmMacAddr mac; kmStrw name{};
 
         buf >> mac >> name;
@@ -545,32 +601,39 @@ public:
         if(FindUser(mac) >= 0)   return; // already registered
         if(_mode == zbMode::nks) return;
 
-        // set role        
+        // set role
         zbRole role = zbRole::family;
 
         if(_mode == zbMode::svr) role = (_users.N1() == 0) ? zbRole::owner : zbRole::member;
-            
-        // add users        
+
+        // add users
         zbUser user(mac, name, role, _ids(src_id).addr, src_id);
 
         AddUser(user);
         SaveUsers();
 
-        // accept the opposite
-        AcceptRegist(src_id, role);
+        print("**** add user : src_id(%d)\n", src_id);
+
+        // accept the opposite        
+        //AcceptRegist(src_id, role);
+        EnqAcceptRegist(src_id, role);
     };
 
     // accept registration (svr to clt)...data_id = 2
-    void AcceptRegist(ushort src_id, zbRole role)
+    void AcpRegist(ushort src_id, zbRole role)
     {
+        print("**** 4. AcpRegist : src_id(%d), role(%d)\n", src_id, (int)role);
+
         uchar data_id = 2; kmNetBuf buf(256);
 
         buf << _mac << _name << role << _pkey;
 
-        Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
+        Send(src_id, data_id, buf.P(), (ushort)buf.N1()); // no waiting
     };
-    void RcvAcceptRegist(ushort src_id, kmNetBuf& buf)
+    void RcvAcpRegist(ushort src_id, kmNetBuf& buf)
     {
+        print("**** 5. RcvAcpRegist : src_id(%d)\n", src_id);
+
         kmMacAddr mac; kmStrw name; zbRole myrole; kmNetKey pkey;
 
         ushort sname[ID_NAME] = {0,};
@@ -596,12 +659,13 @@ public:
         case zbRole::member : role = zbRole::svr;    break;
         case zbRole::family : role = zbRole::family; break;
         case zbRole::guest  : role = zbRole::guest;  break;
+        default: break;
         }
 
         // add users
         zbUser user(mac, name, role, _ids(src_id).addr, src_id, pkey);
 
-        print("** user was added\n"); user.PrintInfo();
+        print("** user was added\n"); cout<<user.PrintInfo();
 
         AddUser(user);
         SaveUsers();
@@ -611,82 +675,74 @@ public:
     void Notify(ushort src_id, zbNoti noti)
     {
         uchar data_id = 3; kmNetBuf buf(8);
-    
+
         buf << noti;
-    
+
         Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
     };
     void RcvNotify(ushort src_id, kmNetBuf& buf)
     {
         zbNoti noti; FindUser(src_id);
-    
+
         buf >> noti;
-    
+
         switch(noti)
         {
-        case zbNoti::none        : print("* receive zbNot::none\n");        break;
+        case zbNoti::none : print("* receive zbNot::none\n"); break;
         default: break;
         }
     };
 
-    // request list (user, strg, file)... data_id = 4    
-    //    if sid   < 0 --> request strg list
-    //    if fid_s < 0 --> request file list
-    //    else         --> file from fid_s to fid_e
-    void ReqList(int uid, int sid = -1, int fid_s = -1, int fid_e = -1)
+    // request file... data_id = 4
+    //   opt : 0 (file), 1(caching)
+    void ReqFile(int uid, int sid, int fid_s, int fid_e = -1, uchar caching = 0)
     {
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
+
         uchar data_id = 4;  kmNetBuf buf(32);
 
-        buf << sid << fid_s << fid_e;
-
-        const ushort src_id = _users(uid).src_id;
+        buf << sid << fid_s << fid_e << caching;
 
         Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
     };
-    void RcvReqList(ushort src_id, kmNetBuf& buf)
+    void RcvReqFile(ushort src_id, kmNetBuf& buf)
     {
-        int sid, fid_s, fid_e;
+        int sid, fid_s, fid_e; uchar caching;
 
-        buf >> sid >> fid_s >> fid_e;
-        
-        if(sid < 0) // request strg list
+        buf >> sid >> fid_s >> fid_e >> caching;
+
+        // get uid
+        int uid = FindUser(src_id);
+
+        // check id
+        if(!CheckId(uid, sid, fid_s)) return;
+
+        // set fid_e
+        const int file_n = (int)GetFiles(uid,sid).N1();
+
+        fid_e = MIN(MAX(fid_s, fid_e), file_n - 1);
+
+        print("*** rcvreqfile : uid(%d) sid(%d) fid(%d,%d)\n", uid, sid, fid_s, fid_e);
+
+        // send files
+        for(int fid = fid_s; fid <= fid_e; ++fid)
         {
+            SendFile(uid, sid, fid, (int)caching);
         }
-        else if(fid_s < 0) // request file list
-        {
-        }
-        else // requset files (from fid_s to fid_e)
-        {
-            int uid = FindUser(src_id);
-
-            const int file_n = (int)GetFiles(uid,sid).N1();
-
-            if(file_n == 0) return;
-
-            fid_e = MIN(MAX(fid_s, fid_e), file_n - 1);
-
-            // send files
-            for(int fid = fid_s; fid <= fid_e; ++fid)
-            {
-                SendFile(uid, sid, fid);
-            }
-        }
-    };
-
-    // request file (user, strg, file)... data_id = 4
-    inline void ReqFile(int uid, int sid, int fid_s, int fid_e = -1)
-    {
-        ReqList(uid, sid, fid_s, fid_e); 
     };
 
     // delete file on svr... date_id = 5
     void DelFile(int uid, int sid, int fid)
     {
+        // check id
+        if(!CheckId(uid, sid, fid)) return;
+
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
+
+        // send
         uchar data_id = 5; kmNetBuf buf(8);
 
         buf << sid << fid;
-
-        const ushort src_id = _users(uid).src_id;
 
         Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
     };
@@ -696,13 +752,15 @@ public:
 
         buf >> sid >> fid;
 
+        // check id
+        if(!CheckId(uid, sid, fid)) return;
+
         // delete file
-        kmStrw& path  = _users(uid).strgs(sid).path;
         zbFile& file  = _users(uid).strgs(sid).files(fid);
 
         if(file.state == zbFileState::bkupno || file.state == zbFileState::bkup)
-        {    
-            kmFile::Remove(kmStrw(L"%S/%S",path.P(), file.name.P()).P());
+        {
+            kmFile::Remove(GetFullPath(uid, sid, fid));
         }
         file.state = zbFileState::none;
 
@@ -716,11 +774,15 @@ public:
     // ack for delfile... date_id = 6
     void AckDelFile(int uid, int sid, int fid)
     {
+        // check
+        if(!CheckId(uid, sid, fid)) return;
+
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
+
+        // send
         uchar data_id = 6; kmNetBuf buf(8);
 
         buf << sid << fid;
-
-        const ushort src_id = _users(uid).src_id;
 
         Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
     };
@@ -729,6 +791,9 @@ public:
         int uid = FindUser(src_id), sid, fid;
 
         buf >> sid >> fid;
+
+        // check id
+        if(!CheckId(uid, sid, fid)) return;
 
         // modifie file state
         zbFileState& state = _users(uid).strgs(sid).files(fid).state;
@@ -740,32 +805,277 @@ public:
     // request thumbnail image... data_id = 7
     void ReqThumb(int uid, int sid, int fid_s, int fid_e, int w_pix = 0, int h_pix = 0)
     {
+        // check
+        if(!CheckId(uid, sid, fid_s)) return;
+
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
+
+        // send
         uchar data_id = 7; kmNetBuf buf(24);
 
         buf << sid << fid_s << fid_e << w_pix << h_pix;
 
-        const ushort src_id = _users(uid).src_id;
-
         Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 1200.f);
     };
-    void RcvReqThumb(ushort src_id, kmNetBuf& buf)
+
+    // request list (user, strg, file)... data_id = 8
+    //    if sid   < 0 --> request strg list
+    void ReqList(zbListType type, int uid, int sid = 0)
     {
-/* for server
-        int uid = FindUser(src_id), sid, fid_s, fid_e, w_pix, h_pix;
+        // check
+        if(uid < 0 || uid >= _users.N1()) return;
 
-        buf >> sid >> fid_s >> fid_e >> w_pix >> h_pix;
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
 
-        // send files
-        zbFiles& files = GetFiles(uid, sid);
+        // send
+        uchar data_id = 8;  kmNetBuf buf(32);
 
-        fid_e = MIN(fid_e, (int)files.N1());
+        buf << type << sid;
 
-        for(int fid = fid_s; fid <= fid_e; ++fid)
-        {
-            SendThumb(uid, sid, fid, w_pix, h_pix);
-        }
-*/
+        Send(src_id, data_id, buf.P(), (ushort)buf.N1(), 100.f);
     };
+    void RcvReqList(ushort src_id, kmNetBuf& buf)
+    {
+        // check
+        int uid = FindUser(src_id); if(uid < 0) return;
+
+        // rcv buf
+        zbListType type; int sid;
+
+        buf >> type >> sid;
+
+        switch(type)
+        {
+        case zbListType::user : break;
+        case zbListType::strg : break;
+        case zbListType::file : break;
+        default: break;
+        }
+    };
+
+    // send text (utf-8)... data_id = 9
+    void SndTxt(int uid, kmStra& txt)
+    {
+        // check
+        if(uid < 0 || uid >= _users.N1()) return;
+
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
+
+        if(txt.Byte() > 2048) { return; }
+        // send
+        uchar data_id = 9;
+
+        Send(src_id, data_id, txt.P(), (ushort)txt.Byte(), 100);
+    };
+    void RcvTxt(ushort src_id, kmNetBuf& buf) {};
+
+    // send json (utf-8)... data_id = 10
+    void SndJson(int uid, kmStra& json)
+    {
+        // check
+        if(uid < 0 || uid >= _users.N1()) return;
+
+        const ushort src_id = _users(uid).src_id; if(src_id >= _ids.N1()) return;
+
+        if(json.Byte() > 2048)
+        {
+            print("* SndJson in 855 : text is too long\n");    return;
+        }
+        // send
+        uchar data_id = 10;
+
+        Send(src_id, data_id, json.P(), (ushort)json.Byte(), 100);
+    };
+    void RcvJson(ushort src_id, kmNetBuf& buf) {};
+
+    /////////////////////////////////////////////////////////////
+    // network interface functions
+public:
+    // connect
+    //  return : src_id (if connecting failed, it will be -1)
+    int Connect(const kmAddr4 addr, float tout_msec = 300.f)
+    {
+        return kmNet::Connect(addr, _name, tout_msec);
+    };
+
+    // connect to new device in lan
+    int ConnectNew()
+    {
+        // get addrs in lan
+        kmAddr4s addrs; kmMacAddrs macs;
+
+        int n = GetAddrsInLan(addrs, macs, _port);
+
+        // connect to new devices
+        int cnnt_n = 0;
+
+        for(int i = 0; i < n; ++i)
+        {
+            if(FindId(macs(i)) > -1) continue; // check if already connected
+
+            if(Connect(addrs(i)) < 0)
+            {
+                print("* connecting failed (to %s)\n", addrs(i).GetStr().P());
+            }
+            else ++cnnt_n;
+        }
+        return cnnt_n;
+    };
+
+    // connect with uid
+    //  return : src_id (if connecting failed, it will be -1)
+    int Connect(int uid)
+    {
+        int ret;
+
+        //print("** 1\n"); ret = ConnectLastAddr(uid); if(ret >= 0) return ret;
+        print("** 2\n"); ret = ConnectInLan   (uid); if(ret >= 0) return ret;
+        print("** 3\n"); ret = ConnectInWan   (uid); if(ret >= 0) return ret;
+
+        print("** connecting fails\n");
+
+        return -1;
+    };
+
+    // connect with last connected address
+    //  return : src_id (if connecting failed, it will be -1)
+    int ConnectLastAddr(int uid)
+    {
+        if(uid >= _users.N1()) return -1;
+
+        print("** connect to the last address (%s)\n", _users(uid).addr.GetStr().P());
+
+        return Connect(_users(uid).addr);
+    };
+
+    // connect in lan
+    //  return : src_id (if connecting failed, it will be -1)
+    int ConnectInLan(int uid)
+    {
+        if(uid >= _users.N1()) return -1;
+
+        // get addrs in lan
+        kmAddr4s addrs; kmMacAddrs macs;
+
+        int n = GetAddrsInLan(addrs, macs, _port);
+
+        print("** get addrs (%d) in lan\n", n);
+
+        // find uid with mac and connect
+        for(int i = 0; i < n; ++i) if(macs(i) == _users(uid).mac)
+        {
+            print("** connect to %s in lan\n", addrs(i).GetStr().P());
+
+            return Connect(addrs(i));
+        }
+        return -1;
+    };
+
+    // connect in wan
+    //  return : src_id (if connecting failed, it will be -1)
+    int ConnectInWan(int uid)
+    {
+        if(uid >= _users.N1()) return -1;
+
+        // check key
+        if(!_users(uid).key.IsValid()) return -1;
+
+        // request addr with key
+        kmAddr4 addr = RequestAddr(_users(uid).key, _users(uid).mac);
+
+        if(!addr.isValid()) return -1;
+
+        print("** connect to %s in wan\n", addr.GetStr().P());
+
+        // send precnnt
+        Preconnect(addr);
+
+        // connect
+        return Connect(addr);
+    };
+
+    // preconnect
+    int Preconnect(kmAddr4 addr)
+    {
+        int n_try = SendPreCnnt(addr, 200, 6);
+
+        if(n_try == 0) print("** precnnt : no answer\n");
+        else           print("** precnnt : get answer after %d times\n", n_try);
+
+        return n_try;
+    };
+    void EnqPreconnect(kmAddr4 addr) { EnqueueWork(3, addr); };
+
+    // check if connected
+    bool IsConnected(int uid)
+    {
+        // check src_id
+        const ushort src_id = GetSrcId(uid);
+
+        if(src_id == 0xffff) return false;
+
+        // send sig
+        const float ec_msec = kmNet::SendSig(src_id, 300.f, 3);
+
+        return (ec_msec >=0) ? true : false;
+    };
+
+    // send data through ptc_data including connection checking
+    // 
+    //   tout_msec : 0 (not wait for ack), > 0 (wait for ack)
+    int Send(ushort src_id, uchar data_id, char* data, ushort byte, 
+             float tout_msec = 0.f, int retry_n = 1)
+    {
+        return kmNet::Send(src_id, data_id, data, byte, tout_msec, retry_n);
+    };
+
+    // send info
+    void SendInfo   (ushort src_id) { SndInfo(src_id); };
+    void EnqSendInfo(ushort src_id) { EnqueueWork(0, src_id); };
+
+    // request registration to svr
+    void RequestRegist(ushort src_id)
+    {
+        ReqRegist(src_id);
+    };
+    void EnqRequestRegist(ushort src_id) { EnqueueWork(1, src_id); };
+
+    // accept registration
+    void AcceptRegist(ushort src_id, zbRole role)
+    {
+        if(_mode == zbMode::svr) AcpRegist(src_id, role);
+    };
+    void EnqAcceptRegist(ushort src_id, zbRole role) { EnqueueWork(2, src_id, role); };
+
+    // send txt with UTF-16
+    void SendTxt(int uid, kmStrw& txtw)
+    {
+        int len = txtw.GetLen()+1;
+        ushort uTxt[len] = {0,};
+        convWC4to2(txtw.P(), uTxt, len);
+        //kmStra txt = txtw.EncWtoA(CP_UTF8); // convert utf-16 to utf-8
+        char cTxt[len] = {0,};
+        kmStra txt(cTxt);
+
+        SndTxt(uid, txt);
+    };
+    // send txt with UTF-8
+    void SendTxt(int uid, kmStra& txt) { SndTxt(uid, txt); };
+
+    // send json with UTF-16
+    void SendJson(int uid, kmStrw& jsonw)
+    {    
+        int len = jsonw.GetLen()+1;
+        ushort uJson[len] = {0,};
+        convWC4to2(jsonw.P(), uJson, len);
+        //kmStra json = jsonw.EncWtoA(CP_UTF8); // convert utf-16 to utf-8
+        char cJson[len] = {0,};
+        kmStra json(cJson);
+
+        SndJson(uid, json);
+    };
+    // send json with UTF-8
+    void SendJson(int uid, kmStra& json) { SndJson(uid, json); };
 
     /////////////////////////////////////////////////////////////
     // setting functions
@@ -836,15 +1146,15 @@ public:
         // add storage
         AddStrg(uid, zbStrgType::imgb, user.IsSvr() ? _srcpath : kmStrw());
 
-        // add link storage ... only for test
-        if(user.role == zbRole::member) // svr
-        {
-            AddStrgLnk(uid, 0, 0);
-        }
-        else if(user.role == zbRole::svr) // clt
-        {
-            AddStrg(uid, zbStrgType::imgs, _dwnpath);
-        }
+        // add link storage ... only test for imgl and imgs
+        //if(user.role == zbRole::member) // svr
+        //{
+        //    AddStrgLnk(uid, 0, 0);
+        //}
+        //else if(user.role == zbRole::svr) // clt
+        //{
+        //    AddStrg(uid, zbStrgType::imgs, _dwnpath);
+        //}
 
         // save strg.list
         SaveStrgs(uid);
@@ -855,7 +1165,7 @@ public:
     {
         if(_users.N1() == 0) return;
         
-        kmFile file(kmStrw(L"%S/.user.list", _path.P()).P(), KF_NEW);
+        kmFile file(kmStrw(L"%S/.userlist", _path.P()).P(), KF_NEW);
 
         file.WriteMat(&_users.Pack());
 
@@ -869,7 +1179,7 @@ public:
     // load users.. .return value is num of user
     int LoadUsers() try
     {
-        kmFile file(kmStrw(L"%S/.user.list", _path.P()).P());
+        kmFile file(kmStrw(L"%S/.userlist", _path.P()).P());
 
         file.ReadMat(&_users);
 
@@ -910,6 +1220,10 @@ public:
         // make strg folder
         kmFile::MakeDir(strg.path.P());
 
+        // make thumb folder
+        kmStrw thumb(L"%S/.thumb",strg.path.P());
+        kmFile::MakeDir(thumb.P());
+
         // add strg
         return (int)strgs.PushBack(strg);
     };
@@ -927,7 +1241,7 @@ public:
         zbStrg strg = {zbStrgType::imgl, kmStrw(L"strg%d",strg_n)};
 
         strg.path    = _users(lnk_uid).strgs(lnk_sid).path;
-        strg.srcpath = _users(lnk_uid).strgs(lnk_sid).srcpath;        
+        strg.srcpath = _users(lnk_uid).strgs(lnk_sid).srcpath;
 
         strg.lnk_uid = lnk_uid;
         strg.lnk_sid = lnk_sid;
@@ -945,7 +1259,7 @@ public:
         if(strgs.N1() == 0) return;
 
         // save file
-        kmFile file(kmStrw(L"%S/.strg.list", _users(uid).path.P()).P(), KF_NEW);
+        kmFile file(kmStrw(L"%S/.strglist", _users(uid).path.P()).P(), KF_NEW);
 
         file.WriteMat(&strgs.Pack());
 
@@ -964,7 +1278,7 @@ public:
         zbStrgs& strgs = _users(uid).strgs;
 
         // load file
-        kmFile file(kmStrw(L"%S/.strg.list", _users(uid).path.P()).P());
+        kmFile file(kmStrw(L"%S/.strglist", _users(uid).path.P()).P());
 
         file.ReadMat(&strgs);
 
@@ -1006,13 +1320,7 @@ public:
         zbFiles& files = _users(uid).strgs(sid).files;
         if (files.N1() < 1) return 0;
 
-        for(int i = 0; i < files.N1(); ++i)
-        {
-            if (files(i).state != zbFileState::bkupno) continue;
-
-            SendFile(uid,sid,i);
-        }
-
+        SendBkupno(true);
         return 1;
     }
 
@@ -1022,7 +1330,7 @@ public:
 
         if (files.N1() < 1) return 0;
 
-        while (files(files.N1()-1).state != zbFileState::bkup) {sleep(1);}
+        while (files(files.N1()-1).state == zbFileState::bkupno) {sleep(1);}
 
         return 1;
     }
@@ -1042,11 +1350,30 @@ public:
 
             for(int sid = 0; sid < stg_n; ++sid)
             {
+                // reset isin flag
+                zbFiles& files  = GetFiles(uid, sid);
+                int      file_n = (int) files.N1();
+
+                for(int i = 0; i < file_n; ++i) files(i).flg.isin = 0;
+
                 // add file
                 int add_n = UpdateFile(uid, sid, buf, fileSendFlag);
 
+                // change deleted file's state
+                int del_n = 0;
+
+                for(int i = 0; i < file_n; ++i)
+                {
+                    if(files(i).flg.isin == 0 && files(i).state == zbFileState::bkup)
+                    {
+                        files(i).state = zbFileState::bkuponly; del_n++;
+                    }
+                }
+
                 // save file list
-                if(add_n > 0) SaveFileList(uid, sid);
+                print("** update file : added (%d), deleted (%d)\n", add_n, del_n);
+
+                if(add_n > 0 || del_n > 0) SaveFileList(uid, sid);
             }
         }
     };
@@ -1063,19 +1390,23 @@ public:
         zbStrg&  strg  = _users(uid).strgs(sid);
         zbFiles& files = strg.files;
 
-        // get file list        
+        // get file list
         kmFileList flst(kmStrw(L"%S/%S*", strg.srcpath.P(), subpath.P()).P());
 
-        // add file
-        int add_n = 0;
+        //flst.Print();
 
-        for(int i = 0; i < flst.N1(); ++i)
+        // add file and check if deleted
+        int add_n = 0, files_n = (int)files.N1(), flst_n = (int)flst.N1();
+
+        kmMat1u8 flg(files_n); flg.SetZero();
+
+        for(int i = 0; i < flst_n; ++i)
         {
             const kmFileInfo& flsti = flst(i);
-            
+
             if(flsti.IsRealDir())
             {
-                kmStrw path(L"%S%S/", subpath.P(), flsti.name.P());
+                kmStrw path(L"%s%s/", subpath.P(), flsti.name.P());
 
                 (subpath += flsti.name) += L"/";
                 
@@ -1088,9 +1419,12 @@ public:
                 // check if flst(i) is already in flies
                 int isin = 0; subpath += flsti.name;
 
-                for(int k = 0; k < files.N1(); ++k)
+                for(int k = 0; k < files_n; ++k)
                 {
-                    if(subpath == files(k).name) { isin = 1; break; }
+                    if(subpath == files(k).name)
+                    {
+                        files(k).flg.isin = isin = 1; break; 
+                    }
                 }
                 if(isin == 0)
                 {
@@ -1115,7 +1449,7 @@ public:
     };
 
     // send bkupno files
-    void SendBkupno()
+    void SendBkupno(bool sync = false)
     {
         const int usr_n = (int)_users.N1(); if(usr_n == 0) return;
 
@@ -1132,6 +1466,8 @@ public:
                 if(snd_n > 0) SaveFileList(uid, sid);
             }
         }
+        // wait for sending to finish
+        if(sync) while(GetSndQueN() > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
     };
     int SendBkupno(int uid, int sid)
     {
@@ -1153,7 +1489,7 @@ public:
     //  return : fid
     int AddFile(int uid, int sid, zbFile& file)
     {
-        char cname[100] = {0,};
+        char cname[300] = {0,};
         wcstombs(cname, file.name.P(), wcslen(file.name.P())*2);
 
         // init
@@ -1172,7 +1508,10 @@ public:
             if(mdf._date != kmDate()) file.date = mdf._date;
             if(mdf._gps  != kmGps())  file.gps  = mdf._gps;
 
-            if(mdf._type == kmMdfType::unknown) file.type = zbFileType::data;
+            // set file type
+            if     (mdf._type == kmMdfType::jpg) file.type = zbFileType::image;
+            else if(mdf._type == kmMdfType::mp4) file.type = zbFileType::movie;
+            else                                 file.type = zbFileType::data;
         }
         return (int)files.PushBack(file);
     };
@@ -1186,7 +1525,7 @@ public:
 
         if(fid < file_n) // old one
         {
-            char cname[100] = {0,};
+            char cname[300] = {0,};
             wcstombs(cname, file.name.P(), wcslen(file.name.P())*2);
             if(files(fid).state == zbFileState::bkuponly) // downloaded from svr
             {
@@ -1240,10 +1579,11 @@ public:
 
             file.state = zbFileState::deleted;
         }
+        SaveFileList(uid, sid);
     };
 
     // delete file on both svr and clt
-    void DeleteFileBoth(int uid, int sid, int fid)
+    void DeleteFileBoth(int uid, int sid, int fid, bool sync = false)
     {
         // init parameters
         kmStrw& path  = _users(uid).strgs(sid).srcpath;
@@ -1263,10 +1603,13 @@ public:
             DelFile(uid, sid, fid);
         }
         file.state = zbFileState::deletednc;
+
+        // wait for receiving ack from svr
+        if(sync) while(file.state != zbFileState::deleted) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
     };
 
     // ban backup
-    void BanBkup(int uid, int sid, int fid)
+    void BanBkup(int uid, int sid, int fid, bool sync = false)
     {
         // init parameters
         zbFileState& state  = _users(uid).strgs(sid).files(fid).state;
@@ -1280,7 +1623,11 @@ public:
             state = zbFileState::bkupbannc;
 
             DelFile(uid, sid, fid);
+
+            // wait for receiving ack from svr
+            if(sync) while(state != zbFileState::bkupban) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
         }
+        SaveFileList(uid, sid);
     };
 
     // lift on the ban for backup
@@ -1300,16 +1647,133 @@ public:
         SaveFileList(uid, sid);
     };
 
-    // send file to user
-    void SendFile(int uid, int sid, int fid)
+    // request file
+    //   ret : < 0 (error), 0 (time out or no waiting), 1(received the file)
+    int RequestFile(int uid, int sid, int fid, float tout_sec = 0, uchar cache = 0)
     {
+        // check id
+        if(!CheckId(uid, sid, fid)) return -1;
+
+        // check connection
+        if(_users(uid).src_id >= _ids.N1()) return -2;
+        
+        // request file
+        ReqFile(uid, sid, fid, fid, cache);
+
+        // wait for receiving file to finish
+        if(tout_sec > 0)
+        {
+            const kmStrw path = GetFullPath(uid, sid, fid, cache); kmTimer time(1);
+
+            // wait for receiving
+            while(time.sec() < tout_sec)
+            {
+                if(kmFile::Exist(path.P())) return 1;
+                if(_rcvfile.IsReceiving(uid, sid, fid, cache)) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // wait for done
+            while(_rcvfile.IsReceiving(uid, sid, fid, cache))
+            {
+                if(kmFile::Exist(path.P())) return 1;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if(kmFile::Exist(path.P())) return 1;
+        }
+        return 0;
+    };
+
+    // request caching file
+    //   ret : < 0 (error), 0 (time out or no waiting), 1(received the file)
+    int RequestCache(int uid, int sid, int fid, float tout_sec = 0)
+    {
+        return RequestFile(uid, sid, fid, tout_sec, 1);
+    };
+
+    // request thumbnail
+    //   ret : < 0 (error), 0 (time out or no waiting), 1(received the file)
+    int RequestThumb(int uid, int sid, int fid, float tout_sec = 0)
+    {
+        // check id
+        if(!CheckId(uid, sid, fid)) return -1;
+
+        // check connection
+        if(_users(uid).src_id >= _ids.N1()) return -2;
+
+        // check if it is an image
+        if(GetFiles(uid,sid)(fid).type != zbFileType::image) return -3;
+
+        // request file
+        ReqThumb(uid, sid, fid, fid);
+
+        // wait for timeout
+        if(tout_sec > 0)
+        {
+            const kmStrw path = GetFullPath(uid, sid, fid, 2); kmTimer time(1);
+
+            // wait for receiving
+            while(time.sec() < tout_sec)
+            {
+                if(kmFile::Exist(path.P())) return 1;
+                if(_rcvfile.IsReceiving(uid, sid, fid, 2)) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // wait for done
+            while(_rcvfile.IsReceiving(uid, sid, fid, 2))
+            {
+                if(kmFile::Exist(path.P())) return 1;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if(kmFile::Exist(path.P())) return 1;
+        }
+        return 0;
+    };
+
+    // send file to user
+    // * Note that if you set sync as true, 
+    // * you should not call this function in other thread before it returns
+    //
+    //   opt : 0 (file), 1 (caching file)    
+    kmNetPtcFileRes SendFile(int uid, int sid, int fid, int opt = 0, bool sync = false)
+    {
+        // check uid, sid, fid and opt
+        if(!CheckId(uid, sid, fid)) return kmNetPtcFileRes::idwrong;
+        if(opt != 0 && opt != 1)    return kmNetPtcFileRes::optwrong;
+
         // init variables
         ushort  src_id = _users(uid).src_id;
         zbStrg& strg   = _users(uid).strgs(sid);
         zbFile& file   = GetFiles(uid,sid)(fid);
 
+        int prm[] = {sid, fid, opt};
+
+        if(file.state == zbFileState::none) return kmNetPtcFileRes::nonexistence;
+
+        // check if there is the src file
+        const kmStrw path = strg.srcpath + L"/" + file.name;
+
+        if(!kmFile::Exist(path.P())) return kmNetPtcFileRes::nonexistence;
+
         // enqueue the file to send
-        kmNet::EnqueueSndFile(src_id, strg.srcpath, file.name, sid, fid);
+        kmNet::EnqSendFile(src_id, strg.srcpath, file.name, prm);
+
+        // wait for sending to finish
+        if(sync)
+        {
+            while(GetSndQueN() > 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            while(_snd_res == kmNetPtcFileRes::inqueue) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return (sync) ? _snd_res : kmNetPtcFileRes::inqueue;
+    };
+
+    // send file to user
+    // * Note that if you set sync as true, 
+    // * you should not call this function in other thread before it returns
+    //
+    //   opt : 0 (file), 1 (caching file)    
+    kmNetPtcFileRes SendFile(int uid, int sid, int fid, bool sync)
+    {
+        return SendFile(uid, sid, fid, 0, sync);
     };
 
     // save file list
@@ -1328,7 +1792,7 @@ public:
 
         if(file_n == 0) return;
 
-        kmStrw name(L"%S/.file.list", strg.path.P());
+        kmStrw name(L"%S/.filelist", strg.path.P());
 
         // save file list
         kmFile file(name.P(), KF_NEW);
@@ -1348,7 +1812,7 @@ public:
         // init variables
         zbStrg&  strg  = _users(uid).strgs(sid); if(strg.type == zbStrgType::imgl) return 0;
         zbFiles& files = strg.files;
-        kmStrw   path(L"%S/.file.list", strg.path.P());
+        kmStrw   path(L"%S/.filelist", strg.path.P());
 
         // load file
         kmFile file(path);
@@ -1415,7 +1879,7 @@ public:
             zbFile& file = files(i);
 
             wcout<<L"["<<i<<L"] "<<file.date.GetStrwPt().P()<<L"  "<<file.gps.GetStrw().P()<<L"  ";
-            char cname[100] = {0,};
+            char cname[300] = {0,};
             wcstombs(cname, file.name.P(), wcslen(file.name.P())*2);
             cout<<cname<<"  ";
 
@@ -1426,6 +1890,7 @@ public:
             case zbFileType::image  : wcout<<L" [image]  "; break;
             case zbFileType::movie  : wcout<<L" [movie]  "; break;
             case zbFileType::folder : wcout<<L" [folder] "; break;
+            default: break;
             }
             switch(file.state)
             {
@@ -1437,7 +1902,11 @@ public:
             case zbFileState::none     : wcout<<L"[none]"<<endl;     break;
             case zbFileState::bkupbannc: wcout<<L"[bkupbannc]"<<endl;break;
             case zbFileState::bkupban  : wcout<<L"[bkupban]"<<endl;  break;
+            default: break;
             }
+            print(file.flg.thumb ? "o":"x");
+            print(file.flg.cache ? "o":"x");
+            wcout<<L" "<<file.name.P()<<endl;
         }
         cout<<endl;
     };
@@ -1469,6 +1938,7 @@ public:
             case zbFileType::image  : oss<<" [image]  "; break;
             case zbFileType::movie  : oss<<" [movie]  "; break;
             case zbFileType::folder : oss<<" [folder] "; break;
+            default: break;
             }
             switch(file.state)
             {
@@ -1480,7 +1950,11 @@ public:
             case zbFileState::none     : oss<<"[none]\n";     break;
             case zbFileState::bkupbannc: oss<<"[bkupbannc]\n";break;
             case zbFileState::bkupban  : oss<<"[bkupban]\n";  break;
+            default: break;
             }
+            print(file.flg.thumb ? "o":"x");
+            print(file.flg.cache ? "o":"x");
+            wcout<<L" "<<file.name.P()<<endl;
         }
         oss<<"\n";
         return oss.str();
@@ -1505,7 +1979,7 @@ public:
         kmFile::MakeDir(dwpath.P());
 
         mbstowcs(temp, pathSet.cachepath.c_str(), pathSet.cachepath.length()*2);
-        _cachepath.SetStr(temp);
+        _tmppath.SetStr(temp);
     };
 
     // check id
@@ -1519,9 +1993,25 @@ public:
         }
         return true;
     };
+    bool CheckId(int uid, int sid)
+    {
+        if(uid < 0 || uid >= _users.N1() ||
+           sid < 0 || sid >= _users(uid).strgs.N1() )
+        {
+            print("* [CheckId](uid %d, sid %d)\n", uid, sid); return false;
+        }
+        return true;
+    };
+
+    // check if the file exists or not
+    //  opt : 0 (file), 1 (caching), 2 (thumbnail)
+    bool Exist(int uid, int sid, int fid, int opt = 0)
+    {
+        return kmFile::Exist(GetFullPath(uid, sid, fid, opt).P());
+    };
 
     /////////////////////////////////////////////////////////////
-    // nsk functions
+    // nks functions
 
     // save nks table
     void SaveNks()
@@ -1544,6 +2034,11 @@ public:
     }
     catch(kmException) { return 0; };
 
+    ///////////////////////////////////////////////
+    // only for debugging
+
+    kmNetPtcFile& GetPtcFile() { return _ptc_file; };
+
     /////////////////////////////////////////////////////////////
     // mac address - device id
     void setDeviceID(const string& deviceID)
@@ -1551,7 +2046,7 @@ public:
         if (deviceID.length() > 16) return;
 
         uint64 longMac = strtoull(deviceID.c_str(), nullptr, 16); // string, idx, base
-        
+
         //macAddr.Set((uchar*)ifr[1].ifr_hwaddr.sa_data);
         char tmpMac[8] = {(char)(longMac>>56&0xFF),
                           (char)(longMac>>48&0xFF),
@@ -1566,7 +2061,7 @@ public:
     }
     void setDeviceName(const string& deviceName)
     {
-        wchar wname[100] = {0,};
+        wchar wname[300] = {0,};
         mbstowcs(wname, deviceName.c_str(), deviceName.length());
         _name.SetStr(wname);
     }

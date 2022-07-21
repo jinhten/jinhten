@@ -86,6 +86,8 @@
     #define ASSERTFW(A, B, ...) {if(!(A)) {wprintf(L"* assertion failed : "#A"\n   ");\
                                           wprintf(B, ##__VA_ARGS__); wprintf(L"\n"); \
                                           throw KE_ASSERTION_FAILED; }}
+    // define debugging line print
+    #define __debugline() {printf("** debug : %s, %d\n", __FUNCTION__, __LINE__);}
 #endif
 
 // define type check macro
@@ -228,7 +230,7 @@
 // define va list macro
 #define GETVAWCHAR(A, B) { va_list args; \
                            va_start(args, B); \
-                           vswprintf(A, sizeof(A)/2, B, args); \
+                           vswprintf(A, sizeof(A)/4, B, args); \
                            va_end  (args); }
 
 #define GETVACHAR(A, B)  { va_list args; \
@@ -268,11 +270,6 @@
 //  LLONG_MIN LLONG_MAX
 //  FLT_MIN   FLT_MAX
 //  DBL_MIN   DBL_MAX
-
-#ifndef _INC_LIMITS
-#define INT_MIN (-2147483647 - 1)
-#define INT_MAX (2147483647)
-#endif
 
 #define SHORT_MIN (-32768)
 #define SHORT_MAX ( 32767)
@@ -333,8 +330,10 @@
 #define HIINT32(c)           (int((c)>>32))
 
 // define transfer to big endian or little endian
-#define ENDIAN16(A)  ((((A>>8)&0xff)|((A<<8)&0xff00)))
-#define ENDIAN32(A)  ((((A>>24)&0xff)|((A>>8)&0xff00)|((A<<8)&0xff0000)|((A<<24)&0xff000000)))
+#define ENDIAN16(A)  (((A>> 8)&0xff)|((A<< 8)&0xff00))
+#define ENDIAN32(A)  (((A>>24)&0xff)|((A>> 8)&0xff00)|((A<< 8)&0xff0000)|((A<<24)&0xff000000))
+#define ENDIAN64(A)  (((A>>56)&0xff)|((A>>40)&0xff00)|((A>>24)&0xff0000)|((A>> 8)&0xff000000)|\
+                      ((A<< 8)&0xff00000000)|((A<<24)&0xff0000000000)|((A<< 40)&0xff000000000000)|((A<<56)&0xff00000000000000))
 
 // num of array
 #define numof(A) (sizeof(A)/sizeof(A[0]))
@@ -352,8 +351,8 @@ typedef          wchar_t        wchar;
 typedef unsigned long           ulong;
 
 // file define
-#define MAX_FILE_N  5000
-
+#define MAX_FILE_N   5000
+#define TIME_OUT_SEC 3
 
 // * Note that the following types are originally defined in CUDA.
 // * But I want kmMat to work without CUDA,
@@ -553,7 +552,8 @@ enum kmException
     KE_CUDA_ERROR,                // cuda error
     KE_CUFFT_ERROR,                // cufft error
     KE_NVML_ERROR,              // nvml error
-    KE_HEADER_ERROR
+    KE_HEADER_ERROR,            // header error
+    KE_NET_ERROR                // network error
 };
 
 // display exception function
@@ -575,6 +575,7 @@ inline void kmPrintException(kmException e)
     case KE_CUDA_ERROR        : PRINTFA("KE_CUDA_ERROR");        break;
     case KE_NVML_ERROR        : PRINTFA("KE_NVML_ERROR");        break;
     case KE_HEADER_ERROR      : PRINTFA("KE_HEADER_ERROR");      break;
+    case KE_NET_ERROR         : PRINTFA("KE_NET_ERROR");         break;
     }
     PRINTFA("\n");
 };

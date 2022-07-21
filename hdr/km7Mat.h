@@ -44,26 +44,43 @@ using namespace std;
 // template functions
 
 // get the virtual table address of class T
-template<class T> void* GetVfptr()     { T a; return (void*) *((int64*)&a); };
-template<class T> void* GetVfptr(T& b) { T a; return (void*) *((int64*)&a); };
+template<class T> void* GetVfptr()     { T a; return (void*) *((int64*)&a); }
+template<class T> void* GetVfptr(T& b) { T a; return (void*) *((int64*)&a); }
+
+// swap endian
+template<typename T> T kmfswapbyte(T a) { return a; }
+
+ushort kmfswapbyte(ushort a) { return ENDIAN16(a); };
+ short kmfswapbyte( short a) { return ENDIAN16(a); };
+uint   kmfswapbyte(uint   a) { return ENDIAN32(a); };
+ int   kmfswapbyte( int   a) { return ENDIAN32(a); };
+uint64 kmfswapbyte(uint64 a) { return ENDIAN64(a); };
+ int64 kmfswapbyte( int64 a) { return ENDIAN64(a); };
+
+ float kmfswapbyte(float  a) { uint   b = ENDIAN32(*(uint  *)&a); return *(float*) &b; };
+double kmfswapbyte(double a) { uint64 b = ENDIAN64(*(uint64*)&a); return *(double*)&b; };
 
 ///////////////////////////////////////////////////////////////
 // rand function with tick count
 
 // get random integer between min and max
-uint kmrand(uint min, uint max)
+//uint kmrand(uint min, uint max) { return uint(GetTickCount64())%(max - min + 1) + min; };
+//int  kmrand( int min,  int max) { return uint(GetTickCount64())%(max - min + 1) + min; };
+
+// get random integer between min and max
+uint kmfrand(uint min, uint max)
 {
     struct timespec tp;
     clock_gettime(CLOCK_MONOTONIC, &tp);
 
-    return uint((tp.tv_sec*1000ull) + (tp.tv_nsec/1000ull/1000ull))%(max - min + 1) + min;
+    return uint((tp.tv_sec*1000ull) + (tp.tv_nsec/1000ull/1000ull))%((int64)max - min + 1) + min;
 };
-int  kmrand( int min,  int max)
+int  kmfrand(int min, int max)
 {
     struct timespec tp;
     clock_gettime(CLOCK_MONOTONIC, &tp);
 
-    return uint((tp.tv_sec*1000ull) + (tp.tv_nsec/1000ull/1000ull))%(max - min + 1) + min;
+    return uint((tp.tv_sec*1000ull) + (tp.tv_nsec/1000ull/1000ull))%((int64)max - min + 1) + min;
 };
 
 #define KKT(A) {cout<<"[kkt.jin] "<<__FILE__<<":"<<__func__<<":"<<__LINE__<<", "<<A<<endl;}
@@ -282,7 +299,12 @@ public:
 union kmstate
 {
     // members
-    uint64 val = 0;
+private:
+    // * Note that you should not directly access val 
+    // * since it can be a different number even in the same state 
+    // * depending on big endian or little endian.
+    uint64 _val = 0; 
+public:
     struct
     {
         uint is_created : 1; // memory was allocated
@@ -294,13 +316,13 @@ union kmstate
     kmstate() {};
 
     // copy constructor    
-    kmstate(const uint64& a)    { val = a; };
+    kmstate(const uint64& a)    { _val = a; };
 
     // assignment operator
-    kmstate& operator=(const uint64& a) { val = a; return *this; };
+    kmstate& operator=(const uint64& a) { _val = a; return *this; };
 
     // conversion operator... (uint64) a
-    operator uint64() const { return val; };
+    operator uint64() const { return _val; };
 };
 
 //////////////////////////////////////////////////////////
@@ -585,11 +607,11 @@ public:
     // display member info
     virtual void PrintInfo(LPCSTR str = nullptr) const
     {
-        if(str != nullptr) PRINTFA("[%s]\n", str);
+        if(str != nullptr) print("[%s]\n", str);
 
-        PRINTFA("  _p     : %p\n"  , _p);
-        PRINTFA("  _state : %llu\n", _state.val);
-        PRINTFA("  _size  : %lld\n", _size);
+        print("  _p     : %p\n"  , _p);
+        print("  _state : created(%d), pinned(%d)\n", _state.is_created, _state.is_pinned);
+        print("  _size  : %lld\n", _size);
     };
 
     // display dimension
@@ -1089,7 +1111,7 @@ public:
         if(_n1 == _size)
         {
             ASSERTA(IsCreated(),"[kmMat1::PushBack in 529]");
-            Expand(16);
+            Expand(_size);
         }
         return ++_n1 - 1;
     };
@@ -3171,6 +3193,7 @@ public:
     static int64 GetStrLen(const wchar_t* str) { if(str == nullptr) return 0; return wcslen(str) + 1; };
 
     // get string length including null-terminating character
+    // * Note that it can be more than (number of characters + 1) if including Korean
     int64 GetLen() const { return GetStrLen(_p); };
 
     // pack string... change n1 as getlen()
@@ -3353,6 +3376,16 @@ public:
         _state = 1;
     };
 
+    // move to the first element
+    void MoveTo1st()
+    {
+        if(_s1 == 0) return;
+
+        for(int64 i = 0; i < _n1; ++i) { *(_p + i) = std::move(*(_p + _s1 + i)); }
+
+        _s1 = 0;
+    };
+
     /////////////////////////////////////////////////
     // general member functions
 
@@ -3365,9 +3398,12 @@ public:
     // enqueue
     int64 Enqueue()
     {
-        if(_s1 + _n1 == _size) Expand(16);
-
-        return ++_n1 - 1;
+        if(_s1 + _n1 == _size) // to guarantee extra space for more than current _n1
+        {
+            if(_n1 < _size/2) MoveTo1st();
+            else              Expand(MAX(16, _n1 - _s1));
+        }
+        return _n1++;
     }
     int64 Enqueue(const T& val)
     {
@@ -3773,6 +3809,7 @@ public:
 ///////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////
 // class of time 
+
 // date class... 8byte
 class kmDate
 {
@@ -3826,7 +3863,7 @@ public:
     {
         return kmStra("%04d-%02d-%02d %02d:%02d:%02d",_year, _mon, _date, _hour, _min, _sec);
     };
-    int64 GetInt() const
+    int64 GetInt() const // sec
     {
         //int64 date = _sec + _min*100 + _hour*10000 + _date*1000000;
         //date += _mon *int64(100000000);
@@ -3854,6 +3891,13 @@ public:
         }
         return str;
     };
+
+    // get time passed in seconds
+    int64 GetPassSec() const
+    {
+        return kmDate(time(NULL)).GetInt() - GetInt();
+    };
+    inline int64 sec() const { return GetInt(); }
 };
 
 // gps class... 24 byte
@@ -3881,7 +3925,6 @@ public:
     {
         wcout<<L"* gps : "<<GetStrw().P()<<endl;
     };
-
     kmStrw GetStrw()
     {
         return kmStrw(L"%7.3f%c %7.3f%c %3.0fm",
@@ -3919,7 +3962,7 @@ public:
     static double GetTime_sec (int64 del_cnt) { return (double)del_cnt/GetFreq();     };
     static double GetTime_msec(int64 del_cnt) { return (double)del_cnt/GetFreq()*1e3; };
     static double GetTime_usec(int64 del_cnt) { return (double)del_cnt/GetFreq()*1e6; };
-
+    
     //////////////////////////////////////
     // member fucntions
     inline int GetState    () { return  _state;       };
@@ -4040,7 +4083,7 @@ public:
     {
         char cname[256] = {0,};
         wcstombs(cname, name.P(), wcslen(name.P())*2);
-        return (attrb & _A_HIDDEN) || (string(cname) == ".file.list");
+        return (attrb & _A_HIDDEN) || (string(cname) == ".filelist");
     };
     bool IsNormal () const { return !IsDir() && !IsHidden(); };
     bool IsRealDir() const
@@ -4062,7 +4105,7 @@ public:
     void GetFileList(const wchar* path)
     {
         // init
-        this->Recreate(0,8);
+        this->Recreate(0,32);
 
         // find first
         _finddata_t fd;
@@ -4213,7 +4256,7 @@ public:
     };
     static int Exist(const wchar* name, bool show_err = false)
     {
-        char cname[100] = {0,};
+        char cname[300] = {0,};
         wcstombs(cname, name, wcslen(name)*2);
         errno_t err = access(cname, 0);
         if(show_err) switch(err)
@@ -4227,7 +4270,7 @@ public:
 
     static int Remove(const wchar* name) 
     {
-        char cname[100] = {0,};
+        char cname[300] = {0,};
         wcstombs(cname, name, wcslen(name)*2);
         return remove(cname);
     }
@@ -4276,6 +4319,8 @@ public:
     {
         if(kmFile::Exist(path.P())) return 1;
 
+        if(path.ReplaceRvrs(L'/', L'\0') == 0) return 0;
+
         if(MakeDirs(path) == 1)
         {
             path(path.GetLen()-1) = L'/';
@@ -4304,7 +4349,7 @@ public:
     template<typename Y> void Write(const Y* str, const size_t cnt = 1)
     {        
         ASSERTA(IsOpen(), "[kmFile::Write in 1865]");
-
+        
         fwrite((void*) str, sizeof(Y), cnt, _file);
     }
 
@@ -4315,6 +4360,21 @@ public:
 
         return fread((void*) str, sizeof(Y), cnt, _file);
     }
+
+    // read data with swapping endian
+    template<typename Y> int64 ReadSwap(Y* str, const size_t cnt = 1)
+    {        
+        ASSERTA(IsOpen(), "[kmFile::Read in 1874]");
+
+        int64 ret = fread((void*) str, sizeof(Y), cnt, _file);
+
+        for(int64 i = 0; i < ret; ++i) str[i] = kmfswapbyte(str[i]);
+
+        return ret;
+    }
+
+    template<typename Y> kmFile& operator<<(Y& data) { Write(&data); return *this; }
+    template<typename Y> kmFile& operator>>(Y& data) { Read (&data); return *this; }
 
     //////////////////////////////////////////////////
     // member functions to read and write kmMat
@@ -4379,7 +4439,7 @@ public:
         }
         else
         {
-            uint64 size;
+            uint64 size = 0;
             fread(&size, 8, 1, _file);
 
             if(size == sizeof(Y)) fread(b->Begin(), sizeof(Y), b->Size(), _file);
@@ -4580,8 +4640,8 @@ public:
     // get block byte
     uint GetBlkByte(uint iblk)
     {
-        ASSERTA( iblk < _blk_n, "[kmFileBlk::GetBlkByte in 1624]");
-        
+        ASSERTA(iblk < _blk_n, "[kmFileBlk::GetBlkByte in 1624] %d < %d", iblk, _blk_n);
+
         return (iblk == _blk_n - 1)? uint(_byte - _blk_byte*(int64)iblk) : _blk_byte;
     };
 };
@@ -4782,9 +4842,9 @@ public:
     };
 
     // begin a thread with lambda function
-    template<class L> void Begin(L lfun)
+    template<class L> void Begin(L lambdafun)
     {
-        _lambda = (void*)&lfun;
+        _lambda = (void*)&lambdafun;
     
         Begin(_kmThreadRun<L>, (void*)this);
     }
@@ -4991,6 +5051,132 @@ void foreach(const M<T1>& a, const M<T2>& b, const M<T3>& c, const M<T4>& d, L l
 {
     for(int64 i = a.N(); i--;) lambdafun(a(i), b(i), c(i), d(i));
 }
+
+///////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////
+// class of work
+
+// class for work 
+//  bytes of arguement buffer(_buf) is 32
+class kmWork
+{
+protected:
+    int _id{}, _byte{}, _ptr{}; char _buf[32]{};
+
+public:
+    // constructor
+    kmWork() {};
+    template<typename... Ts> 
+    kmWork(int id, Ts... args) : _id(id) { Set(args...); }
+
+    // set arguments
+    template<typename T, typename... Ts> 
+    void Set(T arg, Ts... args)
+    {
+        if(_byte + sizeof(T) <= sizeof(_buf))
+        {
+            *(T*)(_buf + _byte) = arg; _byte += sizeof(T);
+        }
+        else print("* [kmWork::Set] buffer was over\n");
+
+        Set(args...);
+    }
+    void Set() {}; // to finish a recursve call
+
+    // set operator
+    template<typename T>
+    kmWork& operator<<(const T& arg) { Set(arg); return *this; }
+
+    // set id
+    kmWork& SetId(int id) { _id = id; return *this; };
+
+    // get id or byte
+    int Id  () { return _id; };
+    int Byte() { return _byte; };
+
+    // get arguments
+    template<typename... Ts, typename T> 
+    void Get(T& arg, Ts&... args) { _ptr = 0; _Get(arg); _Get(args...); }
+
+    // get operator
+    template<typename T> 
+    kmWork& operator>>(T& arg) { _Get(arg); return *this; }
+
+    // begin to get argument using operator>>
+    kmWork& Begin() { _ptr = 0; return *this; };
+
+private:
+    template<typename... Ts, typename T> 
+    void _Get(T& arg, Ts&... args)
+    {
+        arg = *(T*)(_buf + _ptr); _ptr += sizeof(T);
+
+        _Get(args...);
+    }
+    void _Get() {}; // to finish a recursive call
+};
+
+// class for works including thread and mutex
+class kmWorks : public kmQue1<kmWork>
+{
+protected:
+    kmThread _thrd;
+    kmLock   _lck;
+    void*    _lfun = nullptr;
+    void*    _arg  = nullptr;
+public:
+    // create thread for work
+    // example>
+    //  wrks.Create([](kmWork& wrk, kmClass* cls)
+    //  {       
+    //      short arg0; float arg1;
+    //      
+    //      switch(wrk.Id())
+    //      {
+    //      case 0: wrk.Get(arg0);       cls->fun1(arg0);       break;
+    //      case 1: wrk.Get(arg0, arg1); cls->fun2(arg0, arg1); break;  
+    //      }   
+    //  }, this);
+    template<class L, class A> void Create(L lfun, A arg)
+    {
+        // create queue
+        kmQue1<kmWork>::Recreate(16);
+
+        // set lambda funtions
+        _lfun = (void*)&lfun;
+        _arg  = (void*) arg;
+
+        // create thread
+        _thrd.Begin([](kmWorks* wrks)
+        {
+            print("* work thread starts\n");
+            while(1)
+            {
+                if(wrks->N1() > 0)
+                for(int i = (int)wrks->N1(); i--;)
+                {
+                    wrks->_lck.Lock();   //////// lock
+                    kmWork wrk = *wrks->Dequeue();
+                    wrks->_lck.Unlock(); //////// unlock
+
+                    (*(L*)(wrks->_lfun))(wrk, (A)wrks->_arg);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }, this);
+        _thrd.WaitStart();
+    }
+
+    // enqueue work
+    template<typename... Ts>
+    kmWorks& Enqueue(int id, Ts... args)
+    {
+        _lck.Lock();   ///////////////////////// lock
+        kmQue1<kmWork>::Enqueue(kmWork(id, args...));
+        _lck.Unlock(); /////////////////////////  unlock
+        return *this;
+    }
+};
 
 ///////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////
@@ -5699,11 +5885,113 @@ public:
 // media file type... jpg, png, bmp, gif, mp4, mpg, avi, unknown
 enum class kmMdfType { jpg, png, bmp, gif, mp4, mpg, avi, unknown };
 
-// tiff IFD (image file directory) structure... 12byte
-class kmTiffIfd
+// orientation... 1 : upper left, 3: lower right, 6: upper right, 8: lower left
+enum class kmMdfOrnt : ushort { none = 0, upperleft = 1, lowerright = 3, upperright = 6, lowerleft = 8};
+
+// tiff tag (image file directory) structure... 12byte
+//   fmt 1: uchar, 2: ascii, 3: ushort, 4: uint,  5: urational = uint0/uint1,
+//       6: char,            8:  short, 9:  int, 10:  rational =  int0/ int1
+//       11: float, 12: double
+class kmTiffTag
 {
-public: ushort tag, fmt; uint obj_n, data;
+private: 
+    static int _endian; // 0 : little endian, 1 : big endian
+
+public:
+    ushort id, fmt; uint cnt; int ofs;
+
+    // set endian
+    static void SetEndian(int endian) { _endian = endian; };
+    static void SetLitteEndian()      { SetEndian(0);     };
+    static void SetBigEndian  ()      { SetEndian(1);     };
+
+    // get endian... 0 : little endian, 1 : big endian
+    static int  GetEndian()           { return _endian;   }; 
+
+    // read tag depending _endian
+    void Read(kmFile& fobj, int64 pos0)
+    {
+        if(_endian == 0) ReadJust(fobj, pos0);
+        else             ReadSwap(fobj, pos0);
+    };
+
+    // read tag
+    void ReadJust(kmFile& fobj, int64 pos0)
+    {
+        fobj >> id >> fmt >> cnt;
+        
+        const int byte = GetTypeByte();
+
+        if(byte*cnt > 4) (fobj >> ofs).Seek(pos0 + ofs);
+        else             ofs = 0;
+    };
+
+    // read tag with swapping endian
+    void ReadSwap(kmFile& fobj, int64 pos0)
+    {
+        fobj.ReadSwap(&id);
+        fobj.ReadSwap(&fmt);
+        fobj.ReadSwap(&cnt);
+
+        const int byte = GetTypeByte();
+
+        if(byte*cnt > 4) { fobj.ReadSwap(&ofs); fobj.Seek(pos0 + ofs); }
+        else             ofs = 0;
+    };
+
+    // read data depending _endian
+    void ReadData(kmFile& fobj, void* buf)
+    {
+        if(_endian == 0) ReadDataJust(fobj, buf);
+        else             ReadDataSwap(fobj, buf);
+    };
+
+    // read data without swapping endian
+    //    buf size must be equal to obj_n x sizeof(fmt's type)
+    void ReadDataJust(kmFile& fobj, void* buf)
+    {
+        switch(fmt)
+        {
+        case  1: case  6: case  2: fobj.Read(( uchar*) buf, cnt  ); break;
+        case  3: case  8:          fobj.Read((ushort*) buf, cnt  ); break;
+        case  4: case  9:          fobj.Read((  uint*) buf, cnt  ); break;
+        case  5: case 10:          fobj.Read((  uint*) buf, cnt*2); break;
+        case 11:                   fobj.Read(( float*) buf, cnt  ); break;
+        case 12:                   fobj.Read((double*) buf, cnt  ); break;
+        default: break;
+        }
+    };
+
+    // read data with swapping endian
+    //    buf size must be equal to obj_n x sizeof(fmt's type)
+    void ReadDataSwap(kmFile& fobj, void* buf)
+    {
+        switch(fmt)
+        {
+        case  1: case  6: case  2: fobj.ReadSwap(( uchar*) buf, cnt  ); break;
+        case  3: case  8:          fobj.ReadSwap((ushort*) buf, cnt  ); break;
+        case  4: case  9:          fobj.ReadSwap((  uint*) buf, cnt  ); break;
+        case  5: case 10:          fobj.ReadSwap((  uint*) buf, cnt*2); break;
+        case 11:                   fobj.ReadSwap(( float*) buf, cnt  ); break;
+        case 12:                   fobj.ReadSwap((double*) buf, cnt  ); break;
+        default: break;
+        }
+    };
+
+    int GetTypeByte()
+    {
+        switch(fmt)
+        {
+        case  1: case  6: case  2: return 1;
+        case  3: case  8:          return 2;
+        case  4: case  9: case 11: return 4;
+        case  5: case 10: case 12: return 8;
+        default: break;
+        }
+        return 0;
+    };
 };
+int kmTiffTag::_endian = 0;
 
 // media file class
 class kmMdf
@@ -5712,13 +6000,13 @@ public:
     kmMdfType _type{};
     kmDate    _date{};
     kmGps     _gps{};
-    //kmMdfOrnt _ornt{};
+    kmMdfOrnt _ornt{};
 
     // constructor
     kmMdf() {};    
     kmMdf(kmFile& fobj) { Init(fobj); };
     kmMdf(const wchar* fname) { kmFile fobj(fname); Init(fobj); }; 
-
+    
     // init from file
     int Init(kmFile& fobj)
     {
@@ -5729,6 +6017,7 @@ public:
         switch(_type)
         {
         case kmMdfType::jpg : ReadJpg(fobj); return 1;
+        case kmMdfType::mp4 : ReadMp4(fobj); return 1;
         default: break;
         }
         return 0;
@@ -5747,11 +6036,25 @@ public:
         case kmMdfType::mp4 : print("mp4"); break;
         case kmMdfType::mpg : print("mpg"); break;
         case kmMdfType::avi : print("avi"); break;
-        case kmMdfType::unknown : print("unknown");
+        case kmMdfType::unknown : print("unknown"); break;
+        default: break;
         }
         print("\n");
 
         wcout<<L"* date : "<<_date.GetStrwPt().P()<<endl;
+
+        print("* orientation :");
+        switch(_ornt)
+        {
+        case kmMdfOrnt::none       : print("none"       ); break;
+        case kmMdfOrnt::upperleft  : print("upper left" ); break;
+        case kmMdfOrnt::lowerright : print("lower right"); break;        
+        case kmMdfOrnt::upperright : print("upper right"); break;
+        case kmMdfOrnt::lowerleft  : print("lower left" ); break;
+        default: break;
+        }
+        print("\n");
+
         _gps.Print();
     };
 
@@ -5769,6 +6072,7 @@ public:
         if     (IsJpg(buf)) return kmMdfType::jpg;
         else if(IsBmp(buf)) return kmMdfType::bmp;
         else if(IsPng(buf)) return kmMdfType::png;
+        else if(IsMp4(buf)) return kmMdfType::mp4;
 
         return kmMdfType::unknown;
     };
@@ -5783,6 +6087,14 @@ public:
 
         return true;
     };
+    static bool IsMp4(uchar* hd)
+    {
+        const uchar hd0[] = "ftyp"; //{ 0x66, 0x74, 0x79, 0x70 };
+
+        for(int i = 0; i < 4; ++i) if(hd[i + 4] != hd0[i]) return false;
+
+        return true;
+    };
 
     //////////////////////////////////////////////////
     // jpeg functions 
@@ -5791,7 +6103,7 @@ public:
     void ReadJpg(kmFile& fobj)
     {
         fobj.Seek(2); // pos after header (SOI)
-
+        
         for(uchar mk[2] = {}; 1; mk[0] = 0)
         {
             fobj.Read(mk, 2); // read marker
@@ -5808,7 +6120,7 @@ public:
             case 0xC4 : ReadJpgDht (fobj); break; // define huffman table
             case 0xDA : ReadJpgSos (fobj); break; // start of scan
             case 0xFE : ReadJpgCmt (fobj); break; // comment
-            default   : print("*** %c\n", mk[1]);
+            default   : break;
             }
             else break;
 
@@ -5822,8 +6134,8 @@ public:
         const int64 pos0 = fobj.GetPos();
 
         uchar buf[2] = {}; fobj.Read(buf, 2);
-
-        const ushort len = ((ushort)buf[0]<<8) | buf[1];
+        
+        const ushort len = ((ushort)buf[0]<<8) | buf[1]; 
 
         return len + pos0;
     };
@@ -5879,177 +6191,252 @@ public:
     {
         int64 pos0 = fobj.GetPos();
 
-        uchar buf[4] = {}; fobj.Read(buf, 2);
+        uchar buf[2] = {}; fobj.Read(buf, 2);
 
         if(buf[0] == 0x49 && buf[1] == 0x49) // little endian
         {
-            fobj.Read(buf, 2); // tag mark   ...0x2A00
-            fobj.Read(buf, 4); // IFD offset ...0x08000000
+            ushort mark; uint ofs;
 
-            ReadIfdLe(fobj, pos0);
+            fobj.Read(&mark); // tag mark   ...0x2A00
+            fobj.Read(&ofs);  // IFD offset ...0x08000000
+            fobj.Seek(pos0 + ofs);
+
+            kmTiffTag::SetLitteEndian(); print("**** little endian\n");
+
+            ReadIfd(fobj, pos0);
         }
         else if(buf[0] == 0x4d && buf[1] == 0x4d) // big endian
         {
-            fobj.Read(buf, 2); // tag mark   ...0x002A
-            fobj.Read(buf, 4); // IFD offset ...0x00000008
+            ushort mark; uint ofs;
 
-            ReadIfdBe(fobj, pos0);
+            fobj.ReadSwap(&mark); // tag mark   ...0x002A  
+            fobj.ReadSwap(&ofs);  // IFD offset ...0x00000008
+            fobj.Seek(pos0 + ofs);
+
+            kmTiffTag::SetBigEndian(); print("**** big endian\n");
+
+            ReadIfd(fobj, pos0);
         }
         else print("[kmTiffInfo] it is not tiff\n");
+
+        // end of tiff
+        fobj.Read(buf,2);
+
+        ushort len = ((ushort)buf[0]<<8) | buf[1];
+
+        fobj.Seek(pos0 + len).Read(buf,2);
     };
 
-    // read ifd for big endian
-    void ReadIfdBe(kmFile& fobj, int64 pos0)
+    // read ifd 
+    void ReadIfd(kmFile& fobj, int64 pos0)
     {    
-        ushort entry_n; fobj.Read(&entry_n); entry_n = ENDIAN16(entry_n); print_i(entry_n);
+        ushort entry_n;
+        
+        if(kmTiffTag::GetEndian() == 0) fobj.Read    (&entry_n);
+        else                            fobj.ReadSwap(&entry_n);
 
         for(int i = 0; i < entry_n; ++i)
         {
-            kmTiffIfd ifd; fobj.Read(&ifd);
+            int64 pos_old = fobj.GetPos();
 
-            ifd.data  = ENDIAN32(ifd.data);
-            ifd.fmt   = ENDIAN16(ifd.fmt);
-            ifd.obj_n = ENDIAN32(ifd.obj_n);
-            ifd.tag   = ENDIAN16(ifd.tag);
+            kmTiffTag tag; tag.Read(fobj, pos0);
 
-            if(ifd.fmt == 3) ifd.data>>=16; // ushort
-
-            int64 pos_old = fobj.GetPos(); fobj.Seek(pos0).SeekCur(ifd.data);
-
-            switch(ifd.tag)
+            switch(tag.id)
             {
-            case 0x010f : ReadIfdMaker(fobj,  ifd); break; 
-            case 0x0110 : ReadIfdModel(fobj,  ifd); break;
-            case 0x0112 : ReadIfdOrnt (fobj,  ifd); break;
-            case 0x0132 : ReadIfdDate (fobj,  ifd); break;
-            case 0x8825 : ReadIfdGps  (fobj, pos0); break;
+            case 0x0112 : ReadIfdOrnt(fobj, tag);       break;
+            case 0x0132 : ReadIfdDate(fobj, tag);       break;
+            case 0x8825 : ReadIfdGps (fobj, tag, pos0); break;
+            default: break;
             }
-            fobj.Seek(pos_old);
+            fobj.Seek(pos_old + 12);
         }
-        uchar buf[2] = {}; fobj.Read(buf,2);
+    };    
 
-        ushort len = ((ushort)buf[0]<<8) | buf[1];
-
-        fobj.Seek(pos0 + len).Read(buf,2);
-    };
-
-    // read ifd for little endian
-    void ReadIfdLe(kmFile& fobj, int64 pos0)
-    {
-        ushort entry_n; fobj.Read(&entry_n);
-
-        for(int i = 0; i < entry_n; ++i)
-        {
-            kmTiffIfd ifd; fobj.Read(&ifd);
-
-            int64 pos_old = fobj.GetPos(); fobj.Seek(pos0).SeekCur(ifd.data);
-
-            switch(ifd.tag)
-            {
-            case 0x010f : ReadIfdMaker(fobj,  ifd); break;
-            case 0x0110 : ReadIfdModel(fobj,  ifd); break;
-            case 0x0112 : ReadIfdOrnt (fobj,  ifd); break;
-            case 0x0132 : ReadIfdDate (fobj,  ifd); break;
-            case 0x8825 : ReadIfdGps  (fobj, pos0); break;
-            }
-            fobj.Seek(pos_old);
-        }
-        uchar buf[2] = {}; fobj.Read(buf,2);
-
-        ushort len = ((ushort)buf[0]<<8) | buf[1];
-
-        fobj.Seek(pos0 + len).Read(buf,2);
-    };
-    void ReadIfdOrnt(kmFile& fobj, kmTiffIfd& ifd) // orientation
+    void ReadIfdOrnt(kmFile& fobj, kmTiffTag& tag) // orientation.. fmt 3 (short)
     {
         // 1 : upper left, 3: lower right, 6: upper right, 8: lower left
-        //_ornt = (kmMdfOrnt) ifd.data;
-    };
-    void ReadIfdMaker(kmFile& fobj, kmTiffIfd& ifd)
+        tag.ReadData(fobj, (void*)&_ornt);        
+    };    
+    void ReadIfdDate(kmFile& fobj, kmTiffTag& tag)
     {
-        //kmStra maker(ifd.obj_n); fobj.Read(maker.P(), ifd.obj_n);
-    };
-    void ReadIfdModel(kmFile& fobj, kmTiffIfd& ifd)
-    {
-        //kmStra model(ifd.obj_n); fobj.Read(model.P(), ifd.obj_n);
-    };
-    void ReadIfdDate(kmFile& fobj, kmTiffIfd& ifd)
-    {
-        kmStra date(ifd.obj_n); fobj.Read(date.P(), ifd.obj_n); 
+        kmStra date(tag.cnt); tag.ReadData(fobj, date.P()); 
 
         _date.Set(date);
     };
-
     // read ifd gps for little endian
-    void ReadIfdGps(kmFile& fobj, int64 pos0)
+    void ReadIfdGps(kmFile& fobj,  kmTiffTag& tag0, int64 pos0)
     {
-        ushort entry_n; fobj.Read(&entry_n);
+        uint ofs; tag0.ReadData(fobj, &ofs); fobj.Seek(pos0 + ofs);
+
+        ushort entry_n;
+
+        if(kmTiffTag::GetEndian() == 0) fobj.Read    (&entry_n);
+        else                            fobj.ReadSwap(&entry_n);
 
         for(int k = 0; k < entry_n; ++k)
         {
-            kmTiffIfd ifd; fobj.Read(&ifd);
+            int64 pos_old = fobj.GetPos();
 
-            int64 pos_old = fobj.GetPos(); fobj.Seek(pos0).SeekCur(ifd.data);
+            kmTiffTag tag; tag.Read(fobj, pos0);
 
-            switch(ifd.tag)
+            switch(tag.id)
             {            
-            case 0x0001: ReadIfdGpsLatRef(fobj, ifd); break;
-            case 0x0002: ReadIfdGpsLat   (fobj, ifd); break;
-            case 0x0003: ReadIfdGpsLngRef(fobj, ifd); break;
-            case 0x0004: ReadIfdGpsLng   (fobj, ifd); break;
-            case 0x0005: ReadIfdGpsAltRef(fobj, ifd); break;
-            case 0x0006: ReadIfdGpsAlt   (fobj, ifd); break;
-            case 0x0007: ReadIfdGpsTime  (fobj, ifd); break;
-            case 0x001d: ReadIfdGpsDate  (fobj, ifd); break;
-            }            
-            fobj.Seek(pos_old);
+            case 0x0001: ReadIfdGpsLatRef(fobj, tag); break;
+            case 0x0002: ReadIfdGpsLat   (fobj, tag); break;
+            case 0x0003: ReadIfdGpsLngRef(fobj, tag); break;
+            case 0x0004: ReadIfdGpsLng   (fobj, tag); break;
+            case 0x0005: ReadIfdGpsAltRef(fobj, tag); break;
+            case 0x0006: ReadIfdGpsAlt   (fobj, tag); break;
+            case 0x0007: ReadIfdGpsTime  (fobj, tag); break;
+            case 0x001d: ReadIfdGpsDate  (fobj, tag); break;
+            default: break;
+            }
+            fobj.Seek(pos_old + 12);
         }
     };
-    void ReadIfdGpsLatRef(kmFile& fobj, kmTiffIfd& ifd)
+    
+    void ReadIfdGpsLatRef(kmFile& fobj, kmTiffTag& tag)
     {
-        _gps._lat_ref = ifd.data;
-    };
-    void ReadIfdGpsLat(kmFile& fobj, kmTiffIfd& ifd)
-    {
-        int rat[6]; fobj.Read(&rat[0], ifd.obj_n*2);
+        tag.ReadData(fobj, (void*)&_gps._lat_ref);
 
-        double deg = rat[0]/double(rat[1]);
-        double min = rat[2]/double(rat[3]);
-        double sec = rat[4]/double(rat[5]);
+        if(_gps._lat_ref != 'S') _gps._lat_ref = 'N';
+    };
+
+    void ReadIfdGpsLat(kmFile& fobj, kmTiffTag& tag)
+    {
+        uint rat[6]; tag.ReadData(fobj, rat);
+
+        double deg = (rat[1] == 0) ? 0 : rat[0]/double(rat[1]);
+        double min = (rat[3] == 0) ? 0 : rat[2]/double(rat[3]);
+        double sec = (rat[5] == 0) ? 0 : rat[4]/double(rat[5]);
 
         _gps._lat_deg = deg + min/60. + sec/3600.;
     };
-    void ReadIfdGpsLngRef(kmFile& fobj, kmTiffIfd& ifd)
+    
+    void ReadIfdGpsLngRef(kmFile& fobj, kmTiffTag& tag)
     {
-        _gps._lng_ref = ifd.data;
-    };
-    void ReadIfdGpsLng(kmFile& fobj, kmTiffIfd& ifd)
-    {
-        int rat[6]; fobj.Read(&rat[0], ifd.obj_n*2);
+        tag.ReadData(fobj, (void*)&_gps._lng_ref);
 
-        double deg = rat[0]/double(rat[1]);
-        double min = rat[2]/double(rat[3]);
-        double sec = rat[4]/double(rat[5]);
+        if(_gps._lng_ref != 'W') _gps._lng_ref = 'E';
+    };
+
+    void ReadIfdGpsLng(kmFile& fobj, kmTiffTag& tag)
+    {
+        uint rat[6]; tag.ReadData(fobj, rat);
+
+        double deg = (rat[1] == 0) ? 0 : rat[0]/double(rat[1]);
+        double min = (rat[3] == 0) ? 0 : rat[2]/double(rat[3]);
+        double sec = (rat[5] == 0) ? 0 : rat[4]/double(rat[5]);
 
         _gps._lng_deg = deg + min/60. + sec/3600.;
     };
-    void ReadIfdGpsAltRef(kmFile& fobj, kmTiffIfd& ifd)
+    
+    void ReadIfdGpsAltRef(kmFile& fobj, kmTiffTag& ifd) {};
+    
+    void ReadIfdGpsAlt(kmFile& fobj, kmTiffTag& tag)
     {
-    };
-    void ReadIfdGpsAlt(kmFile& fobj, kmTiffIfd& ifd)
-    {
-        int rat[2]; fobj.Read(&rat[0], ifd.obj_n*2);
+        uint rat[2]; tag.ReadData(fobj, rat); 
 
-        _gps._alt_m = float(rat[0]/double(rat[1]));
+        _gps._alt_m = (rat[1] == 0) ? 0 : float(rat[0]/double(rat[1]));
     };
-    void ReadIfdGpsDate(kmFile& fobj, kmTiffIfd& ifd)
-    {
-        //kmStra date(ifd.obj_n); fobj.Read(date.P(), ifd.obj_n);
+    
+    void ReadIfdGpsDate(kmFile& fobj, kmTiffTag& tag) {};
+    void ReadIfdGpsTime(kmFile& fobj, kmTiffTag& tag) {};
+
+    //////////////////////////////////////////////////
+    // mp4 functions 
+
+    // read mp4
+    void ReadMp4(kmFile& fobj)
+    {    
+        fobj.Seek(0); int byte;
+        
+        while(fobj.ReadSwap(&byte) > 0)
+        {    
+            // read type
+            char type[5] = {}; fobj.Read(type, 4);
+
+            print("** [%s] %d bytes\n", type, byte);
+
+            int64 endpos = fobj.GetPos() + byte - 8;
+
+            if     (strcmp(type, "ftyp") == 0) ReadMp4Ftyp(fobj, endpos);
+            else if(strcmp(type, "moov") == 0) ReadMp4Moov(fobj, endpos);
+            else if(strcmp(type, "mdat") == 0) ReadMp4Mdat(fobj, endpos);
+
+            // move to end point
+            fobj.Seek(endpos);
+        }
     };
-    void ReadIfdGpsTime(kmFile& fobj, kmTiffIfd& ifd)
+
+    // read ftyp
+    void ReadMp4Ftyp(kmFile& fobj, int64 endpos) {};
+
+    // read moov
+    void ReadMp4Moov(kmFile& fobj, int64 endpos0)
     {
-        //int rat[6]; fobj.Read(&rat[0], ifd.obj_n*2);
-    };    
+        int byte;
+
+        while(fobj.ReadSwap(&byte) > 0 && fobj.GetPos() < endpos0)
+        {    
+            // read type
+            char type[5] = {}; fobj.Read(type, 4);
+
+            print("**** moov [%s] %d bytes\n", type, byte);
+
+            int64 endpos = fobj.GetPos() + byte - 8;
+
+            if     (strcmp(type, "mvhd") == 0) {}//ReadMp4MoovUdta(fobj, endpos);
+            else if(strcmp(type, "trak") == 0) {}//ReadMp4MoovUdta(fobj, endpos);
+            else if(strcmp(type, "udta") == 0) ReadMp4MoovUdta(fobj, endpos);
+
+            // move to end point
+            fobj.Seek(endpos);
+        }
+    };
+
+    // read moov-udta
+    void ReadMp4MoovUdta(kmFile& fobj, int64 endpos0)
+    {
+        int byte;
+
+        while(fobj.ReadSwap(&byte) > 0 && fobj.GetPos() < endpos0)
+        {    
+            // read type
+            char type[5] = {}; fobj.Read(type, 4);
+
+            print("**** moov-udta [%s] %d bytes\n", type, byte);
+
+            int64 endpos = fobj.GetPos() + byte - 8;
+
+            if(strcmp(type, "meta") == 0) ReadMp4MoovUdtaMeta(fobj, endpos);
+
+            // move to end point
+            fobj.Seek(endpos);
+        }
+    };
+
+    // read moov-udta-meta
+    void ReadMp4MoovUdtaMeta(kmFile& fobj, int64 endpos0)
+    {
+        int byte; fobj.SeekCur(4);
+
+        if(fobj.ReadSwap(&byte) > 0 && fobj.GetPos() < endpos0)
+        {    
+            // read type
+            char type[5] = {}; fobj.Read(type, 4);
+
+            print("**** moov-udta-meta [%s] %d bytes\n", type, byte);
+
+            int64 endpos = fobj.GetPos() + byte - 8;
+
+            // move to end point
+            fobj.Seek(endpos);
+        }
+    };
+
+    // read mdat
+    void ReadMp4Mdat(kmFile& fobj, int64 endpos) {};    
 };
 
 #endif /* __km7Mat__ */

@@ -3,6 +3,7 @@
 #include <vector>
 #include <limits>
 #include <stdio.h>
+#include <bit>
 
 //////////////////////////////////////////////////////////////////
 // window class 
@@ -29,6 +30,7 @@ public:
     void init(const zbNet::PathSet& pathSet, const string& deviceID, const string& deviceName)
     {
         _net.SetNksAddr(kmAddr4(52, 231, 35, 166, DEFAULT_PORT));
+        //_net.SetNksAddr(kmAddr4(10, 114, 75, 52, DEFAULT_PORT));
         CreateChild(pathSet, deviceID, deviceName);
     };
 
@@ -45,11 +47,10 @@ public:
         if (_net._users.N1() > 0) return -1;
 
         // auto connection
-        ConnectBroadcast();
+        int ret = ConnectBroadcast();
+        if (ret == 0) return -1;
 
-        if (_net._users.N1() > 0) return 1;
-
-        return 0;
+        return ret;
     }
 
 /**
@@ -57,6 +58,7 @@ public:
          1. 마지막으로 연결한 집서버 ip/port로 연결시도
          2. 실패하면 Broad cast로 연결시도
          3. 실패하면 RTC로 pkey와 mapping되는 집서버 ip/port를 수신하여 연결시도
+
 @return  0 : 집서버와 연결된 적이 없는 경우.
          1 : 집서버 Connect에 성공한 경우.
 */
@@ -95,6 +97,7 @@ public:
              zibServer에서 응답이 없는 경우.
          1 : zibServer에서 정상적인 응답이 온 경우.
 */
+/*
     int sendPing()
     {
         if (_net._users.N1() < 1 || _net.GetIds().N() < 1) return 0;
@@ -103,6 +106,7 @@ public:
 
         return 1;
     }
+*/
 
 /**
 @brief  1. 파일 전송, File ID를 입력받아 파일 목록에서 파일 경로를 찾아 서버에 업로드
@@ -116,7 +120,7 @@ public:
     {
         if (_net.GetIds().N() < 1) return 0;
 
-        _net.SendFile(0, 0, fid);
+        _net.SendFile(0, 0, fid, true);
         return 1;
     }
 
@@ -131,12 +135,12 @@ public:
 */
     int uploadFiles(vector<int> vFid)
     {
-        if (vFid.size() < 1) return 0;
-
         if (_net.GetIds().N() < 1) return 0;
 
+        if (vFid.size() < 1) return 0;
+
         for (auto fid : vFid)
-            _net.SendFile(0, 0, fid);
+            _net.SendFile(0, 0, fid, true);
 
         return 1;
     }
@@ -148,11 +152,10 @@ public:
 */
     int validateFileList() {return 1;} // TODO
 
-
 ////////////////////////////////////////
 ////////////////////////////////////////
 ////////////////////////////////////////
-    void quickSort(int first, int last, zbFiles& files, vector<int>& v)
+    void quickSort(int first, int last, vector<int64>& files, vector<int>& v)
     {
         int pivot;
         int i;
@@ -168,11 +171,11 @@ public:
             while (i < j)
             {
                 // Decen
-                while (files(v[i]).date.GetInt() > files(v[pivot]).date.GetInt())
+                while (files[v[i]] > files[v[pivot]])
                 {
                     i++;
                 }
-                while (files(v[j]).date.GetInt() <= files(v[pivot]).date.GetInt() && j > first)
+                while (files[v[j]] <= files[v[pivot]] && j > first)
                 {
                     j--;
                 }
@@ -184,11 +187,11 @@ public:
                 }
 /*
                 // Incre
-                while (files(v[i]).date.GetInt() <= files(v[pivot]).date.GetInt() && i < last)
+                while (files[v[i]] <= files[v[pivot]] && i < last)
                 {
                     i++;
                 }
-                while (files(v[j]).date.GetInt() > files(v[pivot]).date.GetInt())
+                while (files[v[j]] > files[v[pivot]])
                 {
                     j--;
                 }
@@ -223,14 +226,18 @@ public:
         zbFiles& files = _net._users(0).strgs(0).files;
         if (files.N1() < 1) return v;
 
+        v.reserve(files.N1());
+
+        vector<int64> vFile;
+        vFile.reserve(files.N1());
         for (int i = 0; i < files.N1(); ++i)
         {
-            if (files(i).state > zbFileState::bkupno && files(i).state < zbFileState::deleted)
+            vFile.push_back(files(i).date.GetInt());
+            if (files(i).state == zbFileState::bkup || files(i).state == zbFileState::bkuponly)
                 v.push_back(i);
         }
 
-        if (v.size() > 0) quickSort(0, v.size()-1, files, v);
-
+        if (v.size() > 0) quickSort(0, v.size()-1, vFile, v);
         return v;
     }
 
@@ -248,6 +255,7 @@ public:
         if (_net._users.N1() < 1) return 0;
 
         zbFiles& files = _net._users(0).strgs(0).files;
+        if (fid < 0) return 0;
         if (fid >= files.N1()) return 0;
 
         zbFile& file = files(fid);
@@ -257,51 +265,48 @@ public:
         infos.date = file.date.GetInt();
 
         char name[200] = {0,};
-        wcstombs(name, file.name.P(), wcslen(file.name.P()));
+        wcstombs(name, file.name.P(), file.name.Byte());
         infos.name.assign(name);
 
         return 1;
     }
 
 /**
-@brief  file ID 를 입력받아 서버에  파일을 요청하여  응답 파일을 지정된 path 에 저장
+@brief  file ID 를 입력받아 서버에  파일을 요청하여  응답 파일을 지정된 download path 에 저장
+
+@param  fid[in] : file id
+
+@return -2 (not connected), -1 (id is out of range), 0 (time out) 1 (ok)
+*/
+    int requestFile(int fid)
+    {
+        return _net.RequestFile(0, 0, fid, TIME_OUT_SEC);
+    }
+
+/**
+@brief  file ID 를 입력받아 서버에 파일을 요청하여 응답 파일을 지정된 cache path에 저장
+        이는 download와 다르게 app에서 zibServer의 file들을 보여주기 위한 용도이다.
+        때문에 requestFile(download)와는 별도로 구분
 
 @param fid[in] : file id
-@param path[in] : 응답으로 받은 파일이 저장될 경로 , 입력되지 않으면 default path에 저장
 
-@return 
+@return -2 (not connected), -1 (id is out of range), 0 (time out) 1 (ok)
 */
-    int requestFile(int fid_s, int fid_e)
+    int requestCacheFile(int fid)
     {
-        if (_net.GetIds().N() < 1) return 0;
-        
-        zbFiles& files = _net._users(0).strgs(0).files;
-        if (fid_s < 0 || fid_s > fid_e) return 0;
-        if (fid_e >= files.N1()) return 0;
-        
-        _net.ReqFile(0, 0, fid_s, fid_e);
-        return 1;
-    }   
+        return _net.RequestCache(0, 0, fid, TIME_OUT_SEC);
+    }
 
 /**
 @brief   file ID 를 입력받아 서버에  thumbnail Media 를 요청하여  응답 파일을 지정된 path 에 저장
 
 @param fid[in] : file id
-@param path[in] : 응답으로 받은 파일이 저장될 경로 , 입력되지 않으면 default path에 저장
 
-@return  
+@return  -3 (not image), -2 (not connected), -1 (id is out of range), 0 (time out) 1 (ok)
 */
-    int requestThumbnail(int fid_s, int fid_e)
+    int requestThumbnail(int fid)
     {
-        if (_net.GetIds().N() < 1) return 0;
-
-        zbFiles& files = _net._users(0).strgs(0).files;
-        if (fid_s < 0 || fid_s > fid_e) return 0;
-        if (fid_e >= files.N1()) return 0;
-
-        _net.ReqThumb(0, 0, fid_s, fid_e);
-
-        return 1;
+        return _net.RequestThumb(0, 0, fid, TIME_OUT_SEC);
     }
 
 /**
@@ -374,16 +379,14 @@ public:
     {
         if (_net.GetIds().N() < 1) return 0;
 
-        _net.BanBkup(0, 0, fid);
+        _net.BanBkup(0, 0, fid, true);
         return 1;
     }
 
 /**
 @brief  fileID 를 입력받아 클라이언트에서 파일 백업이 가능한 상태로 변경
-
 @param  fid[in] : file id
-
-@return 
+@return
 */
     int allowFileBackUp(int fid)
     {
@@ -406,15 +409,13 @@ public:
     {
         if (_net.GetIds().N() < 1) return 0;
 
-        _net.DeleteFileBoth(0, 0, fid);
+        _net.DeleteFileBoth(0, 0, fid, true);
         return 1;
     }
 
 /**
 @brief  APP Action에 의해서 file의 state가 변경된 경우, file list에 저장
-
 @param
-
 @return 
 */
     int saveFileList()
@@ -423,6 +424,50 @@ public:
 
         _net.SaveFileList(0, 0);
         return 1;
+    }
+
+/**
+@brief  Registered User Info를 획득한다.
+
+@param
+
+@return 모든 Registered User의 name, mac, ip 정보
+*/
+    string getUsersInfo()
+    {
+        if (_net._users.N1() < 1) return "";
+
+        ostringstream oss;
+        zbUsers& users = _net._users;
+        for (int i = 0; i < _net._users.N1(); ++i)
+        {
+            oss<<" * user["<<i<<"]\n";
+            oss<<users(i).PrintInfo()<<"\n";
+        }
+
+        return oss.str();
+    }
+
+/**
+@brief  Connected Device Info를 획득한다.
+
+@param
+
+@return 모든 Connected Device의 name, mac, ip 정보
+*/
+    string getCurrConnInfo()
+    {
+        if (_net.GetIds().N() < 1) return "";
+
+        ostringstream oss;
+        kmNetIds& ids = _net.GetIds();
+        for (int i = 0; i < _net.GetIds().N(); ++i)
+        {
+            oss<<" * Connected Device ["<<i<<"]\n";
+            oss<<ids(i).GetStr()<<"\n";
+        }
+
+        return oss.str();
     }
 
 ////////////////////////////////////////
@@ -452,6 +497,14 @@ public:
         _net._dwnpath.SetStr(path_name);
     };
 
+    int getFileNum()
+    {
+        if (_net._users.N1() < 1) return 0;
+    
+        zbFiles& files = _net._users(0).strgs(0).files;
+        return files.N1();
+    };
+
     ///////////////////////////////////
     // windows procedure functions
 protected:
@@ -462,27 +515,6 @@ protected:
 
         // init net
         _net.Init(this, cbRcvNetStt, pathSet, deviceID, deviceName);
-    };
-
-    // download files
-    void DnloadFile()
-    {
-        const zbFiles& files = _net.GetFiles(0,0);
-
-        for(int fid = (int)files.N1(); fid--; )
-        {
-            if(files(fid).state == zbFileState::bkuponly)
-            {
-                _net.ReqFile(0,0,fid,fid);
-            }
-        }
-    };
-
-    // upload bkupno files
-    void UploadBkupno()
-    {
-        print("** update bkupno files\n");
-        _net.SendBkupno();
     };
 
     // print pkeys only for nks svr
@@ -497,15 +529,6 @@ protected:
         }
     };
 
-    // test code only for test
-    void TestCode()
-    {
-        print("** test code\n");
-
-        if(_net._users.N1() == 0) return;
-
-        _net.RequestAddr(_net.GetUser(0).key, _net.GetUser(0).mac);
-    };    
 
     ////////////////////////////////////
     // callback functions for net
@@ -563,7 +586,7 @@ protected:
         if(_net.FindUser(info.mac) < 0) // not registered
         if(_net._mode == zbMode::clt && info.mode == zbMode::svr)
         {
-            _net.ReqRegist(info.src_id);
+            _net.RequestRegist(info.src_id);
         }
     };
 
@@ -571,14 +594,18 @@ protected:
     // network functions
 
     // connect every network using broadcast
-    void ConnectBroadcast()
+    int ConnectBroadcast()
     {
-        static kmThread thrd; thrd.Begin([](zibLinux* lnx)
+        //static kmThread thrd; thrd.Begin([](zibLinux* lnx)
         {
-            int n = lnx->_net.ConnectNew();
+            //int n = lnx->_net.ConnectNew();
+            //int n = _net.ConnectNew();
 
-            print("* number of devices connected : %d\n", n);
-        },this);
+            //print("* number of devices connected : %d\n", n);
+
+        }//,this);
+
+        return _net.ConnectNew();
     };
 
     // connect with ip addr
@@ -646,14 +673,65 @@ int main() try
 
     zibLinux linuxNet;
     linuxNet.init(paths, deviceID, deviceName);
-    //linuxNet.connectToLan();
+
+    linuxNet.connectToLan();
     linuxNet.connectWithZibSvr();
 
     // for debug
     //std::thread cli(zibCli, &linuxNet);
 
+    sleep(1);
+    linuxNet.updateFileList();
+    cout<<linuxNet._net.PrintFileListTest(0,0);
+    sleep(1);
+    //linuxNet.uploadFile(0);
+    linuxNet.backUpAll();
+    sleep(10);
+    cout<<linuxNet.getUsersInfo()<<endl;
+    cout<<linuxNet.getCurrConnInfo()<<endl;
+    //linuxNet.requestThumbnail(6);
+
+/*
+    zibLinux::FileInfos infos;
+    linuxNet.getFileInfo(0, infos);
+    cout<<infos.date<<endl;
+    cout<<infos.type<<endl;
+    cout<<infos.state<<endl;
+    cout<<infos.name<<endl;
+
+    sleep(1);
+    cout<<linuxNet._net.PrintFileListTest(0,0);
+
+    sleep(1);
+    /////////////////
+    cout<<"\n---- 시간측정 시작 ----"<<endl; //결과 출력
+
+    time_t start, end;
+    double result;
+    int i, j;
+    int sum = 0;
+
+    start = time(NULL); // 시간 측정 시작
+
+    vector<int> v = linuxNet.getTotalFileListDateSorted();
+
+    end = time(NULL); // 시간 측정 끝
+
+    result = (double)(end - start);
+    cout<<"\n---- 시간측정 종료 ----"<<endl;
+    cout<<"  걸린시간 : "<<result<<endl; //결과 출력
+    /////////////////
+
+    if (std::endian::native == std::endian::big)
+        cout<<"빅엔디안"<<endl;
+    else if (std::endian::native == std::endian::little)
+        cout<<"리틀엔디안"<<endl;
+*/
+
     while (1) {
-        sleep(2);
+        sleep(1);
+        cout<<linuxNet._net.PrintFileListTest(0,0);
+        sleep(10);
     }
 
     return 0;
